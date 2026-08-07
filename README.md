@@ -36,13 +36,17 @@ export EGLOFF_API_TOKEN="the-sanctum-token"
 
 Once installed and configured, ask Claude Code to push or read tasks /
 context entries against your instance — it will load `egloff-api/SKILL.md`
-and drive `egloff-api/assets/egloff-api.sh` for you. To call it directly:
+and drive the `egloff-api` CLI for you. To call it directly:
 
 ```bash
-egloff-api/assets/egloff-api.sh tasks:create --title="Buy milk" --on_radar_today=true
-egloff-api/assets/egloff-api.sh context:create --type=decision --title="..." --content="..." --topic_key="sdd/foo"
-egloff-api/assets/egloff-api.sh context:list --search=deploy
+egloff-api tasks:create --title="Buy milk" --on_radar_today=true
+egloff-api context:create --type=decision --title="..." --content="..." --topic_key="sdd/foo"
+egloff-api context:list --search=deploy
 ```
+
+Run `egloff-api` with no arguments for an interactive setup assistant that
+persists your URL/token to `~/.config/egloff-api/config`, or `egloff-api
+doctor` to diagnose a broken setup.
 
 See `egloff-api/SKILL.md` and `egloff-api/references/endpoints.md` for the
 full contract.

@@ -1,0 +1,511 @@
+#!/usr/bin/env bash
+# bin/egloff-api — standalone CLI + interactive setup assistant for the
+# app-egloff Sanctum API (/api/tasks, /api/context-entries). Requires:
+# curl, jq.
+#
+# Credentials resolve env > persisted config file, always:
+#   EGLOFF_API_URL    Base URL, e.g. https://app.egloff.com.mx (no trailing slash)
+#   EGLOFF_API_TOKEN  Sanctum token from Panel -> API Token page
+#   ${XDG_CONFIG_HOME:-$HOME/.config}/egloff-api/config   (mode 0600, never sourced)
+#
+# Usage:
+#   egloff-api                              Interactive setup assistant (no args)
+#   egloff-api doctor                       Read-only diagnostics
+#   egloff-api config show|set-url|set-token
+#   egloff-api tasks:list [--search=TEXT]
+#   egloff-api tasks:create --title="..." [--project_id=N] [--description=...] \
+#       [--context=...] [--status=...] [--priority=...] [--due_date=YYYY-MM-DD] \
+#       [--sort_order=N] [--on_radar_today=true|false]
+#   egloff-api tasks:get ID
+#   egloff-api tasks:update ID --title="..." ...
+#   egloff-api tasks:delete ID
+#   egloff-api context:list [--search=TEXT] [--type=...] [--task_id=N] [--topic_key=...]
+#   egloff-api context:create --type=... --title="..." --content="..." \
+#       [--task_id=N] [--topic_key=...]
+#   egloff-api context:get ID
+#   egloff-api context:update ID --title="..." ...
+#   egloff-api context:delete ID
+#
+# context:create with --topic_key upserts (200 = updated, 201 = created).
+# Without --topic_key it always creates a new row.
+
+set -euo pipefail
+
+# =============================================================================
+# lib — generic helpers carried over verbatim from egloff-api/assets/egloff-api.sh
+# =============================================================================
+
+# --key=value ... -> JSON object on stdout. "true"/"false" become JSON
+# booleans and bare integers become JSON numbers (Laravel's `boolean` rule
+# rejects the string "true" — it only accepts true/false/0/1/"0"/"1"), every
+# other value stays a JSON string via --arg.
+args_to_json() {
+  local jq_args=() filter="{"
+  local first=1
+  for arg in "$@"; do
+    [[ "$arg" != --*=* ]] && continue
+    key="${arg#--}"; key="${key%%=*}"
+    val="${arg#*=}"
+    if [[ "$val" == "true" || "$val" == "false" || "$val" =~ ^-?[0-9]+$ ]]; then
+      jq_args+=(--argjson "$key" "$val")
+    else
+      jq_args+=(--arg "$key" "$val")
+    fi
+    if [[ $first -eq 0 ]]; then filter+=","; fi
+    filter+="\"$key\":\$$key"
+    first=0
+  done
+  filter+="}"
+  jq -n "${jq_args[@]}" "$filter"
+}
+
+# --key=value ... -> "key=value&key2=value2" query string (URL-encoded via jq @uri).
+args_to_query() {
+  local pairs=()
+  for arg in "$@"; do
+    [[ "$arg" != --*=* ]] && continue
+    key="${arg#--}"; key="${key%%=*}"
+    val="${arg#*=}"
+    encoded=$(jq -rn --arg v "$val" '$v|@uri')
+    pairs+=("${key}=${encoded}")
+  done
+  local IFS='&'
+  echo "${pairs[*]}"
+}
+
+request() {
+  local method="$1" path="$2" body="${3:-}"
+  local url="${EGLOFF_API_URL}${path}"
+  local response status
+
+  if [[ -n "$body" ]]; then
+    response=$(curl -sS -w '\n%{http_code}' -X "$method" "$url" \
+      -H "Authorization: Bearer ${EGLOFF_API_TOKEN}" \
+      -H "Accept: application/json" \
+      -H "Content-Type: application/json" \
+      -d "$body")
+  else
+    response=$(curl -sS -w '\n%{http_code}' -X "$method" "$url" \
+      -H "Authorization: Bearer ${EGLOFF_API_TOKEN}" \
+      -H "Accept: application/json")
+  fi
+
+  status="${response##*$'\n'}"
+  body_out="${response%$'\n'*}"
+
+  echo "$body_out" | jq . 2>/dev/null || echo "$body_out"
+
+  if [[ "$status" -ge 400 ]]; then
+    echo 'run `egloff-api doctor`' >&2
+    exit 1
+  fi
+}
+
+# =============================================================================
+# config — credential resolution and persistence
+# =============================================================================
+
+# Prints the config file path (honors XDG_CONFIG_HOME).
+config_path() {
+  printf '%s/egloff-api/config' "${XDG_CONFIG_HOME:-$HOME/.config}"
+}
+
+# Parses the config file only, ignoring env vars entirely. Sets
+# FILE_URL/FILE_TOKEN (empty if absent/unreadable) and FILE_HAD_VALUE.
+# Never sources or evals the config file — parsed line-by-line, whitelist
+# keys only, values assigned via `printf -v`, never executed.
+read_config_file() {
+  FILE_URL=""
+  FILE_TOKEN=""
+  FILE_HAD_VALUE=0
+  local config_file
+  config_file="$(config_path)"
+
+  if [ -r "$config_file" ]; then
+    local line key val
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in ''|'#'*) continue ;; esac
+      key="${line%%=*}"
+      val="${line#*=}"
+      key="$(printf '%s' "$key" | tr -d '[:space:]')"
+      case "$key" in
+        EGLOFF_API_URL|EGLOFF_API_TOKEN) ;;
+        *) continue ;;
+      esac
+      case "$val" in
+        \"*\") val="${val:1:${#val}-2}" ;;
+        \'*\') val="${val:1:${#val}-2}" ;;
+      esac
+      if [ "$key" = "EGLOFF_API_URL" ]; then
+        FILE_URL="$val"
+        FILE_HAD_VALUE=1
+      elif [ "$key" = "EGLOFF_API_TOKEN" ]; then
+        FILE_TOKEN="$val"
+        FILE_HAD_VALUE=1
+      fi
+    done < "$config_file"
+  fi
+}
+
+# Resolves EGLOFF_API_URL/EGLOFF_API_TOKEN: env > file, always. Sets
+# CONFIG_SOURCE=env|file|none for callers to report.
+read_config() {
+  local had_url="${EGLOFF_API_URL:+x}" had_token="${EGLOFF_API_TOKEN:+x}"
+
+  read_config_file
+
+  [ -z "$had_url" ] && [ -n "$FILE_URL" ] && EGLOFF_API_URL="$FILE_URL"
+  [ -z "$had_token" ] && [ -n "$FILE_TOKEN" ] && EGLOFF_API_TOKEN="$FILE_TOKEN"
+
+  if [ -n "$had_url" ] || [ -n "$had_token" ]; then
+    CONFIG_SOURCE="env"
+  elif [ "$FILE_HAD_VALUE" -eq 1 ]; then
+    CONFIG_SOURCE="file"
+  else
+    CONFIG_SOURCE="none"
+  fi
+
+  EGLOFF_API_URL="${EGLOFF_API_URL:-}"
+  EGLOFF_API_TOKEN="${EGLOFF_API_TOKEN:-}"
+}
+
+# write_config URL TOKEN — atomic, no permissive-mode window: mkdir -p,
+# mktemp in the same dir under a scoped umask 077, chmod 600, mv -f.
+write_config() {
+  local url="$1" token="$2"
+  local config_file config_dir
+  config_file="$(config_path)"
+  config_dir="$(dirname "$config_file")"
+  mkdir -p "$config_dir"
+  (
+    umask 077
+    tmp_file="$(mktemp "${config_dir}/.egloff-api-config.XXXXXX")"
+    {
+      printf 'EGLOFF_API_URL=%s\n' "$url"
+      printf 'EGLOFF_API_TOKEN=%s\n' "$token"
+    } > "$tmp_file"
+    chmod 600 "$tmp_file"
+    mv -f "$tmp_file" "$config_file"
+  )
+}
+
+# ••••••••<last4>, or "(none)" if empty.
+mask_token() {
+  local token="$1" last4
+  if [ -z "$token" ]; then
+    printf '(none)'
+    return 0
+  fi
+  last4="${token: -4}"
+  printf '••••••••%s' "$last4"
+}
+
+# =============================================================================
+# checks — pure, read-only, status-returning; shared by assistant and doctor
+# =============================================================================
+
+check_deps() {
+  MISSING_DEPS=()
+  local bin
+  for bin in curl jq; do
+    command -v "$bin" >/dev/null 2>&1 || MISSING_DEPS+=("$bin")
+  done
+  [ "${#MISSING_DEPS[@]}" -eq 0 ]
+}
+
+# GET /api/tasks?per_page=1 -> PROBE_HTTP, PROBE_BODY; returns 0 on 2xx.
+check_connectivity() {
+  PROBE_HTTP=""
+  PROBE_BODY=""
+  if [ -z "${EGLOFF_API_URL:-}" ] || [ -z "${EGLOFF_API_TOKEN:-}" ]; then
+    PROBE_BODY="missing credentials"
+    return 1
+  fi
+
+  local response
+  if ! response=$(curl -sS -w '\n%{http_code}' -X GET "${EGLOFF_API_URL}/api/tasks?per_page=1" \
+      -H "Authorization: Bearer ${EGLOFF_API_TOKEN}" \
+      -H "Accept: application/json" 2>&1); then
+    PROBE_HTTP="000"
+    PROBE_BODY="$response"
+    return 1
+  fi
+
+  PROBE_HTTP="${response##*$'\n'}"
+  PROBE_BODY="${response%$'\n'*}"
+
+  if [[ "$PROBE_HTTP" =~ ^[0-9]+$ ]] && [ "$PROBE_HTTP" -ge 200 ] && [ "$PROBE_HTTP" -lt 300 ]; then
+    return 0
+  fi
+  return 1
+}
+
+# Single TTY gate for all prompts. False under bats/CI/pipes -> callers must
+# never block on `read` when this is false.
+is_interactive() {
+  [ -t 1 ] && { [ -t 0 ] || [ -r /dev/tty ]; }
+}
+
+# tty_read VARNAME — reads one line from the controlling terminal into
+# VARNAME (empty on EOF/no tty). Isolated in its own function so tests can
+# override it after sourcing this file, without touching a real /dev/tty.
+tty_read() {
+  local __varname="$1" __val
+  IFS= read -r __val < /dev/tty || __val=""
+  printf -v "$__varname" '%s' "$__val"
+}
+
+# Non-interactive guard for tasks:*/context:* subcommands.
+require_creds() {
+  if [ -z "${EGLOFF_API_URL:-}" ] || [ -z "${EGLOFF_API_TOKEN:-}" ]; then
+    echo "error: no credentials configured (EGLOFF_API_URL/EGLOFF_API_TOKEN)." >&2
+    echo "Run 'egloff-api' to set up, or export the env vars." >&2
+    echo 'run `egloff-api doctor` for details' >&2
+    exit 2
+  fi
+}
+
+# =============================================================================
+# doctor — pure renderer over check_deps/check_connectivity/read_config
+# =============================================================================
+
+cmd_doctor() {
+  local exit_code=0
+
+  echo "egloff-api doctor"
+  echo "-----------------"
+
+  if check_deps; then
+    echo "[ok]   dependencies: curl, jq"
+  else
+    echo "[fail] missing dependencies: ${MISSING_DEPS[*]}"
+    exit_code=1
+  fi
+
+  read_config
+  case "$CONFIG_SOURCE" in
+    env)  echo "[ok]   config: using environment variables" ;;
+    file) echo "[ok]   config: loaded from $(config_path)" ;;
+    none)
+      echo "[fail] config: no EGLOFF_API_URL/EGLOFF_API_TOKEN (env or $(config_path))"
+      exit_code=1
+      ;;
+  esac
+
+  if [ "$CONFIG_SOURCE" != "none" ]; then
+    if check_connectivity; then
+      echo "[ok]   connectivity: reached ${EGLOFF_API_URL} (HTTP ${PROBE_HTTP})"
+    else
+      echo "[fail] connectivity: ${PROBE_BODY:-could not reach ${EGLOFF_API_URL:-<unset>}} (HTTP ${PROBE_HTTP:-000})"
+      exit_code=1
+    fi
+  else
+    echo "[skip] connectivity: no credentials to test"
+  fi
+
+  return $exit_code
+}
+
+# =============================================================================
+# config subcommand — show|set-url|set-token
+# =============================================================================
+
+cmd_config() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    show)
+      read_config
+      echo "URL:    ${EGLOFF_API_URL:-(not set)}"
+      echo "Token:  $(mask_token "${EGLOFF_API_TOKEN:-}")"
+      echo "Source: ${CONFIG_SOURCE}"
+      ;;
+    set-url)
+      local new_url="${1:?usage: egloff-api config set-url URL}"
+      # Preserve the token already on disk, never an env-only override —
+      # env vars are a per-session override and must never get written back.
+      read_config_file
+      write_config "$new_url" "$FILE_TOKEN"
+      echo "Saved URL to $(config_path)"
+      ;;
+    set-token)
+      local new_token="${1:?usage: egloff-api config set-token TOKEN}"
+      read_config_file
+      write_config "$FILE_URL" "$new_token"
+      echo "Saved token to $(config_path)"
+      ;;
+    *)
+      echo "usage: egloff-api config <show|set-url|set-token>" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# =============================================================================
+# assistant — no-args interactive setup, gated by is_interactive()
+# =============================================================================
+
+prompt_and_persist() {
+  local url token
+  printf 'Enter EGLOFF_API_URL: '
+  tty_read url
+  printf 'Enter EGLOFF_API_TOKEN: '
+  tty_read token
+  write_config "$url" "$token"
+  EGLOFF_API_URL="$url"
+  EGLOFF_API_TOKEN="$token"
+  CONFIG_SOURCE="file"
+  if check_connectivity; then
+    echo "Connectivity verified (HTTP ${PROBE_HTTP})."
+  else
+    echo "Warning: could not verify connectivity: ${PROBE_BODY:-unreachable}"
+  fi
+}
+
+offer_skill_install() {
+  echo
+  echo "Install the egloff-api Claude Code skill?"
+  echo "  [g]lobal   ~/.claude/skills/egloff-api"
+  echo "  [p]roject  ./.claude/skills/egloff-api"
+  echo "  [s]kip"
+  printf 'Choice [g/p/s]: '
+  local choice
+  tty_read choice
+  case "$choice" in
+    g|G) echo "Run: install.sh" ;;
+    p|P) echo "Run: install.sh --project ." ;;
+    *)   echo "Skipped." ;;
+  esac
+}
+
+cmd_assistant() {
+  if ! is_interactive; then
+    read_config
+    if [ "$CONFIG_SOURCE" = "none" ]; then
+      echo "error: no configuration found and not running in an interactive terminal." >&2
+      echo "Set EGLOFF_API_URL/EGLOFF_API_TOKEN, or run 'egloff-api' interactively to set up." >&2
+      exit 2
+    fi
+    if check_connectivity; then
+      echo "config OK"
+      exit 0
+    else
+      echo "error: stored configuration failed connectivity check: ${PROBE_BODY:-unreachable}" >&2
+      echo 'run `egloff-api doctor` for details' >&2
+      exit 1
+    fi
+  fi
+
+  if ! check_deps; then
+    echo "Missing required dependencies: ${MISSING_DEPS[*]}"
+    echo "Install them and re-run 'egloff-api'."
+    exit 1
+  fi
+
+  read_config
+
+  if [ "$CONFIG_SOURCE" = "none" ]; then
+    prompt_and_persist
+  else
+    if check_connectivity; then
+      echo "config OK"
+    else
+      echo "Stored configuration failed: ${PROBE_BODY:-connectivity check failed}"
+      printf 'Re-enter URL/token now? [y/N] '
+      local answer
+      tty_read answer
+      case "$answer" in
+        y|Y|yes|Yes) prompt_and_persist ;;
+        *)
+          echo "Skipping. Run 'egloff-api config set-url' / 'set-token' to fix manually."
+          exit 1
+          ;;
+      esac
+    fi
+  fi
+
+  offer_skill_install
+}
+
+# =============================================================================
+# dispatch
+# =============================================================================
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+
+  case "$cmd" in
+    "")
+      cmd_assistant
+      ;;
+    doctor)
+      cmd_doctor
+      ;;
+    config)
+      cmd_config "$@"
+      ;;
+    tasks:list)
+      read_config
+      require_creds
+      qs=$(args_to_query "$@")
+      request GET "/api/tasks${qs:+?$qs}"
+      ;;
+    tasks:create)
+      read_config
+      require_creds
+      request POST "/api/tasks" "$(args_to_json "$@")"
+      ;;
+    tasks:get)
+      read_config
+      require_creds
+      request GET "/api/tasks/${1:?task id required}"
+      ;;
+    tasks:update)
+      read_config
+      require_creds
+      local id="${1:?task id required}"; shift
+      request PUT "/api/tasks/${id}" "$(args_to_json "$@")"
+      ;;
+    tasks:delete)
+      read_config
+      require_creds
+      request DELETE "/api/tasks/${1:?task id required}"
+      ;;
+    context:list)
+      read_config
+      require_creds
+      qs=$(args_to_query "$@")
+      request GET "/api/context-entries${qs:+?$qs}"
+      ;;
+    context:create)
+      read_config
+      require_creds
+      request POST "/api/context-entries" "$(args_to_json "$@")"
+      ;;
+    context:get)
+      read_config
+      require_creds
+      request GET "/api/context-entries/${1:?context entry id required}"
+      ;;
+    context:update)
+      read_config
+      require_creds
+      local id="${1:?context entry id required}"; shift
+      request PUT "/api/context-entries/${id}" "$(args_to_json "$@")"
+      ;;
+    context:delete)
+      read_config
+      require_creds
+      request DELETE "/api/context-entries/${1:?context entry id required}"
+      ;;
+    *)
+      echo "usage: egloff-api [tasks:list|tasks:create|tasks:get|tasks:update|tasks:delete|context:list|context:create|context:get|context:update|context:delete|config|doctor] [--key=value ...]" >&2
+      exit 1
+      ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

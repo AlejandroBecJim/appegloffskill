@@ -133,8 +133,6 @@ install_skill() {
     ln -s "$skill_source" "$target_path"
     echo "Symlinked ${target_path} -> ${skill_source}"
   fi
-
-  chmod +x "${target_path}/assets/egloff-api.sh" 2>/dev/null || true
 }
 
 # link_cli SOURCE_DIR BIN_DIR RESOLVED_MODE
@@ -217,5 +215,5 @@ Installed. Next steps:
 Then ask Claude Code (in a session that loads this skill) to push or read
 tasks/context entries, or call the CLI directly:
 
-  ${target}/assets/egloff-api.sh tasks:list
+  egloff-api tasks:list
 EOF

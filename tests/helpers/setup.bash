@@ -96,3 +96,37 @@ sandbox_teardown() {
     rm -rf "${SANDBOX_TMP}"
   fi
 }
+
+# stub_bin NAME BODY
+# Writes an executable fake "$NAME" script (with BODY as its content) into a
+# sandbox-local directory prepended to PATH, ahead of any real binary with
+# the same name. Used to stub `curl` (and, if ever needed, `jq`) so tests
+# never touch the network.
+stub_bin() {
+  local name="$1" body="$2"
+  local stub_dir="${SANDBOX_TMP}/stubbin"
+  mkdir -p "$stub_dir"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '%s\n' "$body"
+  } > "${stub_dir}/${name}"
+  chmod +x "${stub_dir}/${name}"
+  export PATH="${stub_dir}:${PATH}"
+}
+
+# write_cfg URL TOKEN
+# Writes a fixture ~/.config/egloff-api/config-equivalent file (honoring
+# XDG_CONFIG_HOME if set) under the sandboxed HOME, mode 0600.
+write_cfg() {
+  local url="$1" token="$2"
+  local dir="${XDG_CONFIG_HOME:-${HOME}/.config}/egloff-api"
+  mkdir -p "$dir"
+  (
+    umask 077
+    {
+      printf 'EGLOFF_API_URL=%s\n' "$url"
+      printf 'EGLOFF_API_TOKEN=%s\n' "$token"
+    } > "${dir}/config"
+  )
+  chmod 600 "${dir}/config"
+}

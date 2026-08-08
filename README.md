@@ -1,51 +1,54 @@
 # appegloffskill
 
-A Claude Code [Skill](https://docs.claude.com/en/docs/claude-code/skills) for
-talking to a live [app-egloff](https://github.com/AlejandroBecJim/app-egloff)
-instance's Sanctum API — `/api/tasks` and `/api/context-entries` (ADR-0009).
+Una [Skill](https://docs.claude.com/en/docs/claude-code/skills) de Claude Code
+para hablar con una instancia en vivo de [app-egloff](https://github.com/AlejandroBecJim/app-egloff)
+a través de su API de Sanctum — `/api/tasks` y `/api/context-entries` (ADR-0009).
 
-No MCP server, no daemon: a `SKILL.md` instruction contract plus a small
-`curl`/`jq` wrapper script. One consumer (Claude Code), zero extra
-infrastructure to run or maintain.
+Sin servidor MCP, sin daemon: un contrato de instrucciones `SKILL.md` más un
+pequeño wrapper de `curl`/`jq`. Un solo consumidor (Claude Code), cero
+infraestructura extra que ejecutar o mantener.
 
-## Install
+## Instalación
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AlejandroBecJim/appegloffskill/main/install.sh | bash
 ```
 
-This clones the skill into `~/.local/share/egloff-api-skill` and symlinks it
-into `~/.claude/skills/egloff-api`. Variants:
+Esto clona la skill en `~/.local/share/egloff-api-skill` y la enlaza
+mediante symlink en `~/.claude/skills/egloff-api`. Variantes:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AlejandroBecJim/appegloffskill/main/install.sh | bash -s -- --project /path/to/repo  # project-local: /path/to/repo/.claude/skills/egloff-api
 curl -fsSL https://raw.githubusercontent.com/AlejandroBecJim/appegloffskill/main/install.sh | bash -s -- --copy                    # copy files instead of symlinking (default: symlink)
 ```
 
-Symlinking (the default) means an update in place — re-run the installer to
-pick up new versions. Run `curl -fsSL .../install.sh | bash -s -- --help`
-for the full flag list (or `./install.sh --help` from a local checkout).
+El enlace simbólico (opción por defecto) permite actualizar en el mismo
+lugar: vuelve a ejecutar el instalador para obtener las nuevas versiones.
+Ejecuta `curl -fsSL .../install.sh | bash -s -- --help` para ver la lista
+completa de flags (o `./install.sh --help` desde una copia local).
 
-> **Upgrading from an install created before this change**: re-run the
-> installer once. Old installs symlink to a path that no longer exists after
-> this change, so Claude Code will silently stop finding the skill until you
-> re-run `install.sh`.
+> **Actualizar desde una instalación creada antes de este cambio**: vuelve a
+> ejecutar el instalador una vez. Las instalaciones antiguas apuntan
+> (symlink) a una ruta que ya no existe tras este cambio, por lo que Claude
+> Code dejará de encontrar la skill silenciosamente hasta que vuelvas a
+> ejecutar `install.sh`.
 
-## Configure
+## Configuración
 
-Get a token from your app-egloff instance's Panel → API Token page, then
-export it in your shell (never commit it, never paste it into chat):
+Obtén un token desde la página Panel → API Token de tu instancia de
+app-egloff, y luego expórtalo en tu shell (nunca lo confirmes en un commit,
+nunca lo pegues en el chat):
 
 ```bash
 export EGLOFF_API_URL="https://your-instance.example.com"
 export EGLOFF_API_TOKEN="the-sanctum-token"
 ```
 
-## Use
+## Uso
 
-Once installed and configured, ask Claude Code to push or read tasks /
-context entries against your instance — it will load `skills/egloff-api/SKILL.md`
-and drive the `egloff-api` CLI for you. To call it directly:
+Una vez instalada y configurada, pídele a Claude Code que envíe o lea tareas /
+entradas de contexto contra tu instancia — cargará `skills/egloff-api/SKILL.md`
+y manejará la CLI `egloff-api` por ti. Para llamarla directamente:
 
 ```bash
 egloff-api tasks:create --title="Buy milk" --on_radar_today=true
@@ -53,18 +56,18 @@ egloff-api context:create --type=decision --title="..." --content="..." --topic_
 egloff-api context:list --search=deploy
 ```
 
-Run `egloff-api` with no arguments for an interactive setup assistant that
-persists your URL/token to `~/.config/egloff-api/config`, or `egloff-api
-doctor` to diagnose a broken setup.
+Ejecuta `egloff-api` sin argumentos para un asistente de configuración
+interactivo que guarda tu URL/token en `~/.config/egloff-api/config`, o `egloff-api
+doctor` para diagnosticar una configuración rota.
 
-See `skills/egloff-api/SKILL.md` and `skills/egloff-api/references/endpoints.md`
-for the full contract.
+Consulta `skills/egloff-api/SKILL.md` y `skills/egloff-api/references/endpoints.md`
+para el contrato completo.
 
-## Requirements
+## Requisitos
 
 - `curl`, `jq`
-- A running app-egloff instance and a valid Sanctum API token
+- Una instancia de app-egloff en ejecución y un token de API de Sanctum válido
 
-## License
+## Licencia
 
-Apache-2.0 — see `LICENSE`.
+Apache-2.0 — ver `LICENSE`.

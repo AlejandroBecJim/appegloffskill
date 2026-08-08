@@ -1,26 +1,27 @@
-# app-egloff API reference
+# Referencia de la API de app-egloff
 
-Source of truth: `GET /api/docs` on any running instance, and
-`app/Http/Controllers/Api/DocsController.php` in this repo. This file is a
-convenience mirror — if the two disagree, trust `/api/docs`.
+Fuente de verdad: `GET /api/docs` en cualquier instancia en ejecución, y
+`app/Http/Controllers/Api/DocsController.php` en este repo. Este archivo es
+un espejo de conveniencia — si ambos difieren, confía en `/api/docs`.
 
-All routes below require `Authorization: Bearer <token>` (Laravel Sanctum)
-and are automatically scoped to the token owner's tenant. Cross-tenant
-records return `404`, never `403` (existence itself is not leaked).
+Todas las rutas de abajo requieren `Authorization: Bearer <token>` (Laravel
+Sanctum) y quedan automáticamente scoped al tenant del dueño del token. Los
+registros de otro tenant devuelven `404`, nunca `403` (la existencia en sí
+no se filtra).
 
-## Tasks — `/api/tasks`
+## Tareas — `/api/tasks`
 
-| Method | Path | Notes |
+| Method | Path | Notas |
 |---|---|---|
-| GET | `/api/tasks` | Paginated list, current tenant only |
-| POST | `/api/tasks` | Create. `tenant_id` set automatically |
-| GET | `/api/tasks/{task}` | 404 if not in your tenant |
-| PUT/PATCH | `/api/tasks/{task}` | 404 if not in your tenant |
-| DELETE | `/api/tasks/{task}` | 404 if not in your tenant |
+| GET | `/api/tasks` | Lista paginada, solo el tenant actual |
+| POST | `/api/tasks` | Crear. `tenant_id` se asigna automáticamente |
+| GET | `/api/tasks/{task}` | 404 si no está en tu tenant |
+| PUT/PATCH | `/api/tasks/{task}` | 404 si no está en tu tenant |
+| DELETE | `/api/tasks/{task}` | 404 si no está en tu tenant |
 
-Body fields (POST):
+Campos del body (POST):
 
-| Field | Rule |
+| Campo | Regla |
 |---|---|
 | `project_id` | integer, nullable |
 | `title` | string, required, max:255 |
@@ -32,39 +33,40 @@ Body fields (POST):
 | `sort_order` | integer, nullable |
 | `on_radar_today` | boolean, nullable |
 
-## Context Entries — `/api/context-entries`
+## Entradas de contexto — `/api/context-entries`
 
-| Method | Path | Notes |
+| Method | Path | Notas |
 |---|---|---|
-| GET | `/api/context-entries` | Paginated. `?search=` matches `title` OR `content`. `?type=`, `?task_id=`, `?topic_key=` filter exactly |
-| POST | `/api/context-entries` | See upsert semantics below |
-| GET | `/api/context-entries/{context_entry}` | 404 if not in your tenant |
-| PUT/PATCH | `/api/context-entries/{context_entry}` | 404 if not in your tenant |
-| DELETE | `/api/context-entries/{context_entry}` | 404 if not in your tenant |
+| GET | `/api/context-entries` | Paginado. `?search=` coincide con `title` O `content`. `?type=`, `?task_id=`, `?topic_key=` filtran exactamente |
+| POST | `/api/context-entries` | Ver la semántica de upsert más abajo |
+| GET | `/api/context-entries/{context_entry}` | 404 si no está en tu tenant |
+| PUT/PATCH | `/api/context-entries/{context_entry}` | 404 si no está en tu tenant |
+| DELETE | `/api/context-entries/{context_entry}` | 404 si no está en tu tenant |
 
-Body fields (POST):
+Campos del body (POST):
 
-| Field | Rule |
+| Campo | Regla |
 |---|---|
-| `task_id` | integer, nullable, must belong to your tenant |
+| `task_id` | integer, nullable, debe pertenecer a tu tenant |
 | `type` | required, one of: `decision`, `architecture`, `bugfix`, `pattern`, `config`, `discovery`, `preference`, `session_summary`, `manual` |
 | `title` | string, required, max:255 |
 | `content` | string, required |
 | `topic_key` | string, nullable |
 
-**Upsert semantics**: with `topic_key`, the server does
-`updateOrCreate(['topic_key' => ...], ...)` scoped to your tenant — same
-`topic_key` again updates the existing row (`200`) instead of duplicating it.
-Without `topic_key`, every call always creates a new row (`201`); this is
-intentional, not a bug — do not rely on a missing `topic_key` to deduplicate.
+**Semántica de upsert**: con `topic_key`, el servidor hace
+`updateOrCreate(['topic_key' => ...], ...)` scoped a tu tenant — el mismo
+`topic_key` de nuevo actualiza la fila existente (`200`) en lugar de
+duplicarla. Sin `topic_key`, cada llamada siempre crea una fila nueva
+(`201`); esto es intencional, no un bug — no confíes en la ausencia de
+`topic_key` para deduplicar.
 
-`created_by` and `tenant_id` are always set server-side from the
-authenticated token; sending them in the body has no effect.
+`created_by` y `tenant_id` siempre se asignan del lado del servidor desde el
+token autenticado; enviarlos en el body no tiene efecto.
 
-## Errors
+## Errores
 
-| Status | Meaning |
+| Status | Significado |
 |---|---|
-| 401 | Missing/invalid/revoked token |
-| 404 | Record doesn't exist, or exists in a different tenant |
-| 422 | Validation failed — body has `message` + `errors` per field |
+| 401 | Token faltante/inválido/revocado |
+| 404 | El registro no existe, o existe en un tenant distinto |
+| 422 | Falló la validación — el body tiene `message` + `errors` por campo |

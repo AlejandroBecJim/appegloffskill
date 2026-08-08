@@ -55,23 +55,50 @@ teardown() {
   export EGLOFF_API_URL="https://env.example"
   export EGLOFF_API_TOKEN="envtoken"
 
-  run bash -c "source '${CLI}'; read_config; printf '%s|%s|%s' \"\$EGLOFF_API_URL\" \"\$EGLOFF_API_TOKEN\" \"\$CONFIG_SOURCE\""
+  run bash -c "source '${CLI}'; read_config; printf '%s|%s|%s|%s' \"\$EGLOFF_API_URL\" \"\$EGLOFF_API_TOKEN\" \"\$URL_SOURCE\" \"\$TOKEN_SOURCE\""
   [ "$status" -eq 0 ]
-  [ "$output" = "https://env.example|envtoken|env" ]
+  [ "$output" = "https://env.example|envtoken|env|env" ]
 }
 
 @test "file-only resolution when no env vars are set" {
   write_cfg "https://file.example" "filetoken"
 
-  run bash -c "source '${CLI}'; read_config; printf '%s|%s|%s' \"\$EGLOFF_API_URL\" \"\$EGLOFF_API_TOKEN\" \"\$CONFIG_SOURCE\""
+  run bash -c "source '${CLI}'; read_config; printf '%s|%s|%s|%s' \"\$EGLOFF_API_URL\" \"\$EGLOFF_API_TOKEN\" \"\$URL_SOURCE\" \"\$TOKEN_SOURCE\""
   [ "$status" -eq 0 ]
-  [ "$output" = "https://file.example|filetoken|file" ]
+  [ "$output" = "https://file.example|filetoken|file|file" ]
 }
 
-@test "no config and no env resolves to CONFIG_SOURCE=none" {
-  run bash -c "source '${CLI}'; read_config; printf '%s' \"\$CONFIG_SOURCE\""
+@test "no config and no env resolves to the preset default URL and TOKEN_SOURCE=none" {
+  run bash -c "source '${CLI}'; read_config; printf '%s|%s|%s' \"\$EGLOFF_API_URL\" \"\$URL_SOURCE\" \"\$TOKEN_SOURCE\""
   [ "$status" -eq 0 ]
-  [ "$output" = "none" ]
+  [ "$output" = "https://app.egloff.com.mx|default|none" ]
+}
+
+@test "unset EGLOFF_API_URL resolves to the preset default" {
+  run bash -c "source '${CLI}'; read_config; printf '%s' \"\$URL_SOURCE\""
+  [ "$status" -eq 0 ]
+  [ "$output" = "default" ]
+}
+
+@test "EGLOFF_API_URL explicitly empty resolves to the preset default, not an error" {
+  export EGLOFF_API_URL=""
+  run bash -c "source '${CLI}'; read_config; printf '%s|%s' \"\$EGLOFF_API_URL\" \"\$URL_SOURCE\""
+  [ "$status" -eq 0 ]
+  [ "$output" = "https://app.egloff.com.mx|default" ]
+}
+
+@test "EGLOFF_API_URL override still works end-to-end" {
+  export EGLOFF_API_URL="https://other.example"
+  run bash -c "source '${CLI}'; read_config; printf '%s|%s' \"\$EGLOFF_API_URL\" \"\$URL_SOURCE\""
+  [ "$status" -eq 0 ]
+  [ "$output" = "https://other.example|env" ]
+}
+
+@test "config file URL wins over the preset default when no env override" {
+  write_cfg "https://file-only.example" "filetoken"
+  run bash -c "source '${CLI}'; read_config; printf '%s' \"\$URL_SOURCE\""
+  [ "$status" -eq 0 ]
+  [ "$output" = "file" ]
 }
 
 # --- Secure atomic write -----------------------------------------------------
@@ -143,4 +170,24 @@ teardown() {
   [[ "$output" == *"https://show.example"* ]]
   [[ "$output" == *"wxyz"* ]]
   [[ "$output" != *"abcd1234wxyz"* ]]
+}
+
+@test "config show renders a (source: ...) label for both URL and token" {
+  write_cfg "https://show.example" "abcd1234wxyz"
+
+  run bash -c "source '${CLI}'; main config show"
+  [ "$status" -eq 0 ]
+  local source_count
+  source_count=$(grep -o '(source: ' <<< "$output" | wc -l)
+  [ "$source_count" -eq 2 ]
+}
+
+@test "config set-url still persists an explicit override even with a URL env override active" {
+  write_cfg "https://old.example" "keeptoken"
+
+  run bash -c "export EGLOFF_API_URL=https://temp-session.example; source '${CLI}'; main config set-url https://new.example"
+  [ "$status" -eq 0 ]
+
+  run bash -c "unset EGLOFF_API_URL; source '${CLI}'; read_config; printf '%s|%s' \"\$EGLOFF_API_URL\" \"\$URL_SOURCE\""
+  [ "$output" = "https://new.example|file" ]
 }

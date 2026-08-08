@@ -35,28 +35,35 @@ completa de flags (o `./install.sh --help` desde una copia local).
 
 ## Configuración
 
+La URL de la API ya viene preconfigurada (`https://app.egloff.com.mx`) —
+en el uso normal lo único que tenés que configurar es tu token.
+
 **Recomendado — una sola vez, queda funcionando siempre:** corre el
-asistente interactivo. Te va a pedir la URL de tu instancia de app-egloff
-y un token (página Panel → API Token), probar la conectividad, y guardar
-todo en `~/.config/egloff-api/config` (permisos `600`). No necesitás
-volver a hacer nada en sesiones de shell nuevas ni al reiniciar el equipo:
+asistente interactivo. Te va a pedir únicamente un token (página Panel →
+API Token), probar la conectividad, y guardarlo en
+`~/.config/egloff-api/config` (permisos `600`). No necesitás volver a
+hacer nada en sesiones de shell nuevas ni al reiniciar el equipo:
 
 ```bash
 egloff-api
 ```
 
 `egloff-api doctor` diagnostica una configuración rota (dependencias,
-credenciales, conectividad) sin modificar nada. `egloff-api config
+token, conectividad) y muestra el origen de la URL resuelta (`default`,
+`env` o el archivo de config), sin modificar nada. `egloff-api config
 show|set-url|set-token` gestiona la config guardada directamente, sin
 pasar por el asistente completo.
 
-**Alternativa — override de una sola sesión:** exportar las variables de
-entorno tiene prioridad sobre la config guardada y solo dura mientras esa
-terminal esté abierta (útil para probar otra instancia sin tocar tu config
-persistida). Nunca confirmes el token en un commit ni lo pegues en el chat:
+**Alternativa — apuntar a otra instancia (testing):** `egloff-api config
+set-url URL` persiste un override permanente, o exportá `EGLOFF_API_URL`
+para un override de una sola sesión (tiene prioridad sobre la config
+guardada y sobre el default, y solo dura mientras esa terminal esté
+abierta). Un `EGLOFF_API_URL=""` explícito se comporta igual que no
+exportarla — cae al default, no es un error. Nunca confirmes el token en
+un commit ni lo pegues en el chat:
 
 ```bash
-export EGLOFF_API_URL="https://your-instance.example.com"
+export EGLOFF_API_URL="https://your-instance.example.com"  # opcional: solo para apuntar a otra instancia
 export EGLOFF_API_TOKEN="the-sanctum-token"
 ```
 

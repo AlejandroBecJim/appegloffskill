@@ -71,7 +71,7 @@ detect_mode() {
   if [ -n "$script_path" ] && [ -r "$script_path" ]; then
     local script_dir
     script_dir="$(cd "$(dirname "$script_path")" && pwd)"
-    if [ -d "${script_dir}/egloff-api" ]; then
+    if [ -d "${script_dir}/skills/egloff-api" ]; then
       echo "local"
       return 0
     fi
@@ -112,7 +112,7 @@ install_skill() {
   local source_dir="$1"
   local target_path="$2"
   local install_mode="$3"
-  local skill_source="${source_dir}/egloff-api"
+  local skill_source="${source_dir}/skills/egloff-api"
 
   if [ ! -d "$skill_source" ]; then
     echo "error: expected ${skill_source} to exist" >&2

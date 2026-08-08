@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # Local-mode regression: default install, --project, --copy, unknown arg,
 # -h/--help. Runs the real install.sh directly from the checkout (local
-# mode: BASH_SOURCE readable + sibling egloff-api/ present).
+# mode: BASH_SOURCE readable + sibling skills/egloff-api/ present).
 
 load 'helpers/setup'
 
@@ -17,7 +17,7 @@ teardown() {
   run bash "$INSTALL_SH"
   [ "$status" -eq 0 ]
   [ -L "${HOME}/.claude/skills/egloff-api" ]
-  [ "$(readlink "${HOME}/.claude/skills/egloff-api")" = "${REPO_ROOT}/egloff-api" ]
+  [ "$(readlink "${HOME}/.claude/skills/egloff-api")" = "${REPO_ROOT}/skills/egloff-api" ]
 }
 
 @test "--project PATH installs into PATH/.claude/skills/egloff-api" {

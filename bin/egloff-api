@@ -32,7 +32,7 @@
 set -euo pipefail
 
 # =============================================================================
-# lib — generic helpers carried over verbatim from egloff-api/assets/egloff-api.sh
+# lib — generic helpers carried over verbatim from skills/egloff-api/assets/egloff-api.sh
 # =============================================================================
 
 # --key=value ... -> JSON object on stdout. "true"/"false" become JSON

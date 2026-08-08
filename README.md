@@ -11,16 +11,25 @@ infrastructure to run or maintain.
 ## Install
 
 ```bash
-git clone https://github.com/AlejandroBecJim/appegloffskill.git
-cd appegloffskill
-
-./install.sh                        # global: ~/.claude/skills/egloff-api
-./install.sh --project /path/to/repo  # project-local: /path/to/repo/.claude/skills/egloff-api
-./install.sh --copy [...]           # copy files instead of symlinking (default: symlink)
+curl -fsSL https://raw.githubusercontent.com/AlejandroBecJim/appegloffskill/main/install.sh | bash
 ```
 
-Symlinking (the default) means `git pull` in this repo updates every
-install in place. Run `./install.sh --help` for the full flag list.
+This clones the skill into `~/.local/share/egloff-api-skill` and symlinks it
+into `~/.claude/skills/egloff-api`. Variants:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AlejandroBecJim/appegloffskill/main/install.sh | bash -s -- --project /path/to/repo  # project-local: /path/to/repo/.claude/skills/egloff-api
+curl -fsSL https://raw.githubusercontent.com/AlejandroBecJim/appegloffskill/main/install.sh | bash -s -- --copy                    # copy files instead of symlinking (default: symlink)
+```
+
+Symlinking (the default) means an update in place — re-run the installer to
+pick up new versions. Run `curl -fsSL .../install.sh | bash -s -- --help`
+for the full flag list (or `./install.sh --help` from a local checkout).
+
+> **Upgrading from an install created before this change**: re-run the
+> installer once. Old installs symlink to a path that no longer exists after
+> this change, so Claude Code will silently stop finding the skill until you
+> re-run `install.sh`.
 
 ## Configure
 
@@ -35,7 +44,7 @@ export EGLOFF_API_TOKEN="the-sanctum-token"
 ## Use
 
 Once installed and configured, ask Claude Code to push or read tasks /
-context entries against your instance — it will load `egloff-api/SKILL.md`
+context entries against your instance — it will load `skills/egloff-api/SKILL.md`
 and drive the `egloff-api` CLI for you. To call it directly:
 
 ```bash
@@ -48,8 +57,8 @@ Run `egloff-api` with no arguments for an interactive setup assistant that
 persists your URL/token to `~/.config/egloff-api/config`, or `egloff-api
 doctor` to diagnose a broken setup.
 
-See `egloff-api/SKILL.md` and `egloff-api/references/endpoints.md` for the
-full contract.
+See `skills/egloff-api/SKILL.md` and `skills/egloff-api/references/endpoints.md`
+for the full contract.
 
 ## Requirements
 

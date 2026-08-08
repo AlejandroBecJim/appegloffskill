@@ -25,7 +25,7 @@ run_piped() {
   run run_piped
   [ "$status" -eq 0 ]
   [ -d "${EGLOFF_INSTALL_ROOT}/.git" ]
-  [ -d "${EGLOFF_INSTALL_ROOT}/egloff-api" ]
+  [ -d "${EGLOFF_INSTALL_ROOT}/skills/egloff-api" ]
   [ -L "${HOME}/.claude/skills/egloff-api" ]
 }
 
@@ -54,7 +54,7 @@ run_piped() {
   run run_piped
   [ "$status" -eq 0 ]
   [ -d "${EGLOFF_INSTALL_ROOT}/.git" ]
-  [ -d "${EGLOFF_INSTALL_ROOT}/egloff-api" ]
+  [ -d "${EGLOFF_INSTALL_ROOT}/skills/egloff-api" ]
   [ ! -f "${EGLOFF_INSTALL_ROOT}/garbage" ]
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # egloff-cli: args_to_json / args_to_query typing and encoding, carried over
-# verbatim from egloff-api/assets/egloff-api.sh.
+# verbatim from skills/egloff-api/assets/egloff-api.sh.
 
 load 'helpers/setup'
 

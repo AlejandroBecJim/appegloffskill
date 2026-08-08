@@ -7,40 +7,40 @@ metadata:
   version: "1.0"
 ---
 
-## Activation Contract
+## Contrato de activación
 
-Load when asked to push, sync, or read tasks/pendientes/context entries against a **live, deployed** app-egloff instance via its HTTP API — not for local DB/model work (use `laravel-testing` and read the Eloquent models directly for that).
+Cargar cuando se pida enviar, sincronizar o leer tareas/pendientes/entradas de contexto contra una instancia **en vivo y desplegada** de app-egloff a través de su API HTTP — no para trabajo local de BD/modelos (usa `laravel-testing` y lee los modelos Eloquent directamente para eso).
 
-## Hard Rules
+## Reglas estrictas
 
-- Never hardcode a token or base URL in a command, file, or commit. Credentials resolve from `EGLOFF_API_URL`/`EGLOFF_API_TOKEN` environment variables, falling back to a persisted `~/.config/egloff-api/config` (written by `egloff-api`'s interactive setup assistant). If neither is present, tell the user to run `egloff-api` (no args) to set up, or how to get a token (Panel → API Token page) — do not ask them to paste it into chat.
-- This talks to a **real, possibly production** app-egloff deployment. Treat every `POST`/`PUT`/`DELETE` call as a live-data mutation: state which endpoint and payload you're about to send before running it, same as any other risky action.
-- `context:create` without `--topic_key` always creates a new row (no dedup). To update-or-create, pass the same `--topic_key` every time — see `references/endpoints.md` for exact semantics.
-- All endpoints are tenant-scoped automatically by the token; a wrong/expired token fails with 401, a cross-tenant id fails with 404 — never assume 403 means "exists but forbidden."
-- `created_by`/`tenant_id` are server-assigned; don't try to pass them.
+- Nunca hardcodear un token o base URL en un comando, archivo o commit. Las credenciales se resuelven desde las variables de entorno `EGLOFF_API_URL`/`EGLOFF_API_TOKEN`, con fallback a un `~/.config/egloff-api/config` persistido (escrito por el asistente de configuración interactivo de `egloff-api`). Si ninguna está presente, dile al usuario que ejecute `egloff-api` (sin argumentos) para configurarlo, o cómo obtener un token (página Panel → API Token) — no le pidas que lo pegue en el chat.
+- Esto habla con un despliegue **real, posiblemente de producción** de app-egloff. Trata cada llamada `POST`/`PUT`/`DELETE` como una mutación de datos en vivo: indica qué endpoint y payload estás por enviar antes de ejecutarla, igual que con cualquier otra acción riesgosa.
+- `context:create` sin `--topic_key` siempre crea una fila nueva (sin dedup). Para update-or-create, pasa el mismo `--topic_key` cada vez — ver `references/endpoints.md` para la semántica exacta.
+- Todos los endpoints están scoped por tenant automáticamente según el token; un token incorrecto/expirado falla con 401, un id de otro tenant falla con 404 — nunca asumas que 403 significa "existe pero está prohibido."
+- `created_by`/`tenant_id` son asignados por el servidor; no intentes pasarlos.
 
-## Decision Gates
+## Puertas de decisión
 
-| Need | Use |
+| Cuándo | Usar |
 |---|---|
-| Create/update/delete a task remotely | `tasks:create`, `tasks:update`, `tasks:delete` |
-| List/search tasks | `tasks:list` |
-| Save a memory/decision/context note remotely (Engram-style) | `context:create --topic_key=...` (upsert) or without it (always-new) |
-| List/search context entries | `context:list --search=...` |
-| Exact field rules, status/type enums, error shapes | `references/endpoints.md` |
+| Crear/actualizar/eliminar una tarea remotamente | `tasks:create`, `tasks:update`, `tasks:delete` |
+| Listar/buscar tareas | `tasks:list` |
+| Guardar una memoria/decisión/nota de contexto remotamente (estilo Engram) | `context:create --topic_key=...` (upsert) o sin él (siempre crea una nueva) |
+| Listar/buscar entradas de contexto | `context:list --search=...` |
+| Reglas exactas de campos, enums de status/type, formas de error | `references/endpoints.md` |
 
-## Execution Steps
+## Pasos de ejecución
 
-1. Confirm credentials are available: run `egloff-api doctor`, or check `test -n "$EGLOFF_API_TOKEN"` / a persisted `~/.config/egloff-api/config`. If neither is present, stop and tell the user to run `egloff-api` (no args) to set up, or export the env vars.
-2. Run `egloff-api <subcommand> [--key=value ...]` — see `bin/egloff-api`'s header comment for the full subcommand list.
-3. Read the JSON response; a non-2xx status prints the server's error body verbatim on stderr plus a one-line `run \`egloff-api doctor\`` hint — surface the `message`/`errors` fields to the user, don't just say "it failed."
-4. For anything not covered by a subcommand (custom filters, pagination beyond page 1), fall back to plain `curl` following the same auth header pattern, per `references/endpoints.md`.
+1. Confirma que las credenciales estén disponibles: ejecuta `egloff-api doctor`, o revisa `test -n "$EGLOFF_API_TOKEN"` / un `~/.config/egloff-api/config` persistido. Si ninguna está presente, detente y dile al usuario que ejecute `egloff-api` (sin argumentos) para configurarlo, o que exporte las variables de entorno.
+2. Ejecuta `egloff-api <subcommand> [--key=value ...]` — ver el comentario de cabecera de `bin/egloff-api` para la lista completa de subcomandos.
+3. Lee la respuesta JSON; un status no-2xx imprime el cuerpo del error del servidor textualmente en stderr, más una pista de una línea `run \`egloff-api doctor\`` — muestra los campos `message`/`errors` al usuario, no digas solo que "falló."
+4. Para cualquier cosa no cubierta por un subcomando (filtros personalizados, paginación más allá de la página 1), recurre a `curl` plano siguiendo el mismo patrón de cabecera de autenticación, según `references/endpoints.md`.
 
-## Output Contract
+## Contrato de salida
 
-Every call reports: which endpoint was hit, the HTTP status, and the relevant response fields (id, created/updated timestamps) — not just "done."
+Cada llamada reporta: qué endpoint se llamó, el status HTTP, y los campos relevantes de la respuesta (id, timestamps de creación/actualización) — no solo "listo."
 
-## References
+## Referencias
 
-- `bin/egloff-api` — the CLI (curl/jq wrapper + setup assistant); read its header comment for full usage.
-- `references/endpoints.md` — field-by-field API contract (mirrors `GET /api/docs`).
+- `bin/egloff-api` — la CLI (wrapper de curl/jq + asistente de configuración); lee su comentario de cabecera para el uso completo.
+- `references/endpoints.md` — contrato de API campo por campo (refleja `GET /api/docs`).

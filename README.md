@@ -35,9 +35,25 @@ completa de flags (o `./install.sh --help` desde una copia local).
 
 ## Configuración
 
-Obtén un token desde la página Panel → API Token de tu instancia de
-app-egloff, y luego expórtalo en tu shell (nunca lo confirmes en un commit,
-nunca lo pegues en el chat):
+**Recomendado — una sola vez, queda funcionando siempre:** corre el
+asistente interactivo. Te va a pedir la URL de tu instancia de app-egloff
+y un token (página Panel → API Token), probar la conectividad, y guardar
+todo en `~/.config/egloff-api/config` (permisos `600`). No necesitás
+volver a hacer nada en sesiones de shell nuevas ni al reiniciar el equipo:
+
+```bash
+egloff-api
+```
+
+`egloff-api doctor` diagnostica una configuración rota (dependencias,
+credenciales, conectividad) sin modificar nada. `egloff-api config
+show|set-url|set-token` gestiona la config guardada directamente, sin
+pasar por el asistente completo.
+
+**Alternativa — override de una sola sesión:** exportar las variables de
+entorno tiene prioridad sobre la config guardada y solo dura mientras esa
+terminal esté abierta (útil para probar otra instancia sin tocar tu config
+persistida). Nunca confirmes el token en un commit ni lo pegues en el chat:
 
 ```bash
 export EGLOFF_API_URL="https://your-instance.example.com"
@@ -55,10 +71,6 @@ egloff-api tasks:create --title="Buy milk" --on_radar_today=true
 egloff-api context:create --type=decision --title="..." --content="..." --topic_key="sdd/foo"
 egloff-api context:list --search=deploy
 ```
-
-Ejecuta `egloff-api` sin argumentos para un asistente de configuración
-interactivo que guarda tu URL/token en `~/.config/egloff-api/config`, o `egloff-api
-doctor` para diagnosticar una configuración rota.
 
 Consulta `skills/egloff-api/SKILL.md` y `skills/egloff-api/references/endpoints.md`
 para el contrato completo.

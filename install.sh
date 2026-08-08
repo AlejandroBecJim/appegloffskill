@@ -209,8 +209,13 @@ cat <<EOF
 
 Installed. Next steps:
 
-  export EGLOFF_API_URL="https://your-instance.example.com"
   export EGLOFF_API_TOKEN="the-sanctum-token"   # Panel -> API Token page
+
+The API URL is preset to https://app.egloff.com.mx, so a token is all you
+need. Alternatively, run 'egloff-api' for the interactive setup assistant
+(token-only prompt, persists to ~/.config/egloff-api/config).
+
+  export EGLOFF_API_URL="https://your-instance.example.com"   # optional: point at another instance
 
 Then ask Claude Code (in a session that loads this skill) to push or read
 tasks/context entries, or call the CLI directly:

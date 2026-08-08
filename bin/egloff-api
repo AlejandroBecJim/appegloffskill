@@ -3,8 +3,10 @@
 # app-egloff Sanctum API (/api/tasks, /api/context-entries). Requires:
 # curl, jq.
 #
-# Credentials resolve env > persisted config file, always:
-#   EGLOFF_API_URL    Base URL, e.g. https://app.egloff.com.mx (no trailing slash)
+# The URL is preset (https://app.egloff.com.mx); only a token is required.
+# Credentials resolve env > persisted config file > preset default:
+#   EGLOFF_API_URL    Base URL, preset to https://app.egloff.com.mx. Only
+#                     override this to point at another instance for testing.
 #   EGLOFF_API_TOKEN  Sanctum token from Panel -> API Token page
 #   ${XDG_CONFIG_HOME:-$HOME/.config}/egloff-api/config   (mode 0600, never sourced)
 #
@@ -30,6 +32,14 @@
 # Without --topic_key it always creates a new row.
 
 set -euo pipefail
+
+# EGLOFF_API_URL resolves to a preset default when unset or explicitly
+# empty. EGLOFF_API_URL_ENV snapshots the raw incoming env value BEFORE the
+# seam overwrites it, so read_config() can still tell "env was set" apart
+# from "env was unset" after this point.
+EGLOFF_API_URL_DEFAULT="https://app.egloff.com.mx"
+EGLOFF_API_URL_ENV="${EGLOFF_API_URL:-}"                    # captured BEFORE the seam
+EGLOFF_API_URL="${EGLOFF_API_URL:-$EGLOFF_API_URL_DEFAULT}"
 
 # =============================================================================
 # lib — generic helpers carried over verbatim from skills/egloff-api/assets/egloff-api.sh
@@ -111,13 +121,12 @@ config_path() {
 }
 
 # Parses the config file only, ignoring env vars entirely. Sets
-# FILE_URL/FILE_TOKEN (empty if absent/unreadable) and FILE_HAD_VALUE.
+# FILE_URL/FILE_TOKEN (empty if absent/unreadable).
 # Never sources or evals the config file — parsed line-by-line, whitelist
 # keys only, values assigned via `printf -v`, never executed.
 read_config_file() {
   FILE_URL=""
   FILE_TOKEN=""
-  FILE_HAD_VALUE=0
   local config_file
   config_file="$(config_path)"
 
@@ -138,35 +147,41 @@ read_config_file() {
       esac
       if [ "$key" = "EGLOFF_API_URL" ]; then
         FILE_URL="$val"
-        FILE_HAD_VALUE=1
       elif [ "$key" = "EGLOFF_API_TOKEN" ]; then
         FILE_TOKEN="$val"
-        FILE_HAD_VALUE=1
       fi
     done < "$config_file"
   fi
 }
 
-# Resolves EGLOFF_API_URL/EGLOFF_API_TOKEN: env > file, always. Sets
-# CONFIG_SOURCE=env|file|none for callers to report.
+# Resolves EGLOFF_API_URL/EGLOFF_API_TOKEN. URL precedence: env > file >
+# preset default. Token precedence: env > file > none. Sets URL_SOURCE
+# (default|env|file) and TOKEN_SOURCE (env|file|none) for callers to report.
 read_config() {
-  local had_url="${EGLOFF_API_URL:+x}" had_token="${EGLOFF_API_TOKEN:+x}"
+  local had_url="${EGLOFF_API_URL_ENV:+x}" had_token="${EGLOFF_API_TOKEN:+x}"
 
   read_config_file
 
-  [ -z "$had_url" ] && [ -n "$FILE_URL" ] && EGLOFF_API_URL="$FILE_URL"
-  [ -z "$had_token" ] && [ -n "$FILE_TOKEN" ] && EGLOFF_API_TOKEN="$FILE_TOKEN"
-
-  if [ -n "$had_url" ] || [ -n "$had_token" ]; then
-    CONFIG_SOURCE="env"
-  elif [ "$FILE_HAD_VALUE" -eq 1 ]; then
-    CONFIG_SOURCE="file"
+  if [ -n "$had_token" ]; then
+    TOKEN_SOURCE="env"
+  elif [ -n "$FILE_TOKEN" ]; then
+    EGLOFF_API_TOKEN="$FILE_TOKEN"
+    TOKEN_SOURCE="file"
   else
-    CONFIG_SOURCE="none"
+    EGLOFF_API_TOKEN=""
+    TOKEN_SOURCE="none"
   fi
 
-  EGLOFF_API_URL="${EGLOFF_API_URL:-}"
-  EGLOFF_API_TOKEN="${EGLOFF_API_TOKEN:-}"
+  if [ -n "$had_url" ]; then
+    EGLOFF_API_URL="$EGLOFF_API_URL_ENV"
+    URL_SOURCE="env"
+  elif [ -n "$FILE_URL" ]; then
+    EGLOFF_API_URL="$FILE_URL"
+    URL_SOURCE="file"
+  else
+    EGLOFF_API_URL="$EGLOFF_API_URL_DEFAULT"
+    URL_SOURCE="default"
+  fi
 }
 
 # write_config URL TOKEN — atomic, no permissive-mode window: mkdir -p,
@@ -217,8 +232,8 @@ check_deps() {
 check_connectivity() {
   PROBE_HTTP=""
   PROBE_BODY=""
-  if [ -z "${EGLOFF_API_URL:-}" ] || [ -z "${EGLOFF_API_TOKEN:-}" ]; then
-    PROBE_BODY="missing credentials"
+  if [ -z "${EGLOFF_API_TOKEN:-}" ]; then
+    PROBE_BODY="missing API token"
     return 1
   fi
 
@@ -257,12 +272,30 @@ tty_read() {
 
 # Non-interactive guard for tasks:*/context:* subcommands.
 require_creds() {
-  if [ -z "${EGLOFF_API_URL:-}" ] || [ -z "${EGLOFF_API_TOKEN:-}" ]; then
-    echo "error: no credentials configured (EGLOFF_API_URL/EGLOFF_API_TOKEN)." >&2
-    echo "Run 'egloff-api' to set up, or export the env vars." >&2
+  if [ -z "${EGLOFF_API_TOKEN:-}" ]; then
+    echo "error: no EGLOFF_API_TOKEN configured." >&2
+    echo "Run 'egloff-api' to set up, or export EGLOFF_API_TOKEN." >&2
     echo 'run `egloff-api doctor` for details' >&2
     exit 2
   fi
+}
+
+# Single provenance renderer for URL_SOURCE/TOKEN_SOURCE, shared by doctor
+# and `config show`.
+url_source_label() {
+  case "$URL_SOURCE" in
+    default) printf 'default' ;;
+    env)     printf 'env EGLOFF_API_URL' ;;
+    file)    printf '%s' "$(config_path)" ;;
+  esac
+}
+
+token_source_label() {
+  case "$TOKEN_SOURCE" in
+    env)  printf 'env EGLOFF_API_TOKEN' ;;
+    file) printf '%s' "$(config_path)" ;;
+    none) printf 'not set' ;;
+  esac
 }
 
 # =============================================================================
@@ -283,16 +316,16 @@ cmd_doctor() {
   fi
 
   read_config
-  case "$CONFIG_SOURCE" in
-    env)  echo "[ok]   config: using environment variables" ;;
-    file) echo "[ok]   config: loaded from $(config_path)" ;;
-    none)
-      echo "[fail] config: no EGLOFF_API_URL/EGLOFF_API_TOKEN (env or $(config_path))"
-      exit_code=1
-      ;;
-  esac
+  echo "[ok]   url: ${EGLOFF_API_URL} (source: $(url_source_label))"
 
-  if [ "$CONFIG_SOURCE" != "none" ]; then
+  if [ "$TOKEN_SOURCE" != "none" ]; then
+    echo "[ok]   token: loaded (source: $(token_source_label))"
+  else
+    echo "[fail] token: not set — export EGLOFF_API_TOKEN or run 'egloff-api' to set up"
+    exit_code=1
+  fi
+
+  if [ "$TOKEN_SOURCE" != "none" ]; then
     if check_connectivity; then
       echo "[ok]   connectivity: reached ${EGLOFF_API_URL} (HTTP ${PROBE_HTTP})"
     else
@@ -300,7 +333,7 @@ cmd_doctor() {
       exit_code=1
     fi
   else
-    echo "[skip] connectivity: no credentials to test"
+    echo "[skip] connectivity: no token to test"
   fi
 
   return $exit_code
@@ -316,9 +349,8 @@ cmd_config() {
   case "$sub" in
     show)
       read_config
-      echo "URL:    ${EGLOFF_API_URL:-(not set)}"
-      echo "Token:  $(mask_token "${EGLOFF_API_TOKEN:-}")"
-      echo "Source: ${CONFIG_SOURCE}"
+      echo "URL:    ${EGLOFF_API_URL} (source: $(url_source_label))"
+      echo "Token:  $(mask_token "${EGLOFF_API_TOKEN:-}") (source: $(token_source_label))"
       ;;
     set-url)
       local new_url="${1:?usage: egloff-api config set-url URL}"
@@ -346,15 +378,21 @@ cmd_config() {
 # =============================================================================
 
 prompt_and_persist() {
-  local url token
-  printf 'Enter EGLOFF_API_URL: '
-  tty_read url
+  local token persist_url
+  echo "Using API URL: ${EGLOFF_API_URL} (source: $(url_source_label))"
+  echo "Override it later with 'egloff-api config set-url URL'."
   printf 'Enter EGLOFF_API_TOKEN: '
   tty_read token
-  write_config "$url" "$token"
-  EGLOFF_API_URL="$url"
+
+  # Persist the file's existing URL if present, else the preset default —
+  # NEVER a resolved env-only override. Mirrors the same env-must-never-leak
+  # protection already applied by `config set-url`/`set-token`.
+  read_config_file
+  persist_url="${FILE_URL:-$EGLOFF_API_URL_DEFAULT}"
+  write_config "$persist_url" "$token"
+
   EGLOFF_API_TOKEN="$token"
-  CONFIG_SOURCE="file"
+  TOKEN_SOURCE="file"
   if check_connectivity; then
     echo "Connectivity verified (HTTP ${PROBE_HTTP})."
   else
@@ -381,9 +419,9 @@ offer_skill_install() {
 cmd_assistant() {
   if ! is_interactive; then
     read_config
-    if [ "$CONFIG_SOURCE" = "none" ]; then
-      echo "error: no configuration found and not running in an interactive terminal." >&2
-      echo "Set EGLOFF_API_URL/EGLOFF_API_TOKEN, or run 'egloff-api' interactively to set up." >&2
+    if [ "$TOKEN_SOURCE" = "none" ]; then
+      echo "error: no EGLOFF_API_TOKEN found and not running in an interactive terminal." >&2
+      echo "Set EGLOFF_API_TOKEN, or run 'egloff-api' interactively to set up." >&2
       exit 2
     fi
     if check_connectivity; then
@@ -404,20 +442,20 @@ cmd_assistant() {
 
   read_config
 
-  if [ "$CONFIG_SOURCE" = "none" ]; then
+  if [ "$TOKEN_SOURCE" = "none" ]; then
     prompt_and_persist
   else
     if check_connectivity; then
       echo "config OK"
     else
       echo "Stored configuration failed: ${PROBE_BODY:-connectivity check failed}"
-      printf 'Re-enter URL/token now? [y/N] '
+      printf 'Re-enter token now? [y/N] '
       local answer
       tty_read answer
       case "$answer" in
         y|Y|yes|Yes) prompt_and_persist ;;
         *)
-          echo "Skipping. Run 'egloff-api config set-url' / 'set-token' to fix manually."
+          echo "Skipping. Run 'egloff-api config set-token' to fix manually (or 'config set-url' to point at another instance)."
           exit 1
           ;;
       esac

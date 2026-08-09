@@ -13,7 +13,9 @@
 # Usage:
 #   egloff-api                              Interactive setup assistant (no args)
 #   egloff-api doctor                       Read-only diagnostics
-#   egloff-api update                       Update this CLI/skill in place (git)
+#   egloff-api update                       Update this CLI/skill in place (git);
+#                                            also repairs/prunes --project
+#                                            installs tracked in the manifest
 #   egloff-api config show|set-url|set-token
 #   egloff-api tasks:list [--search=TEXT]
 #   egloff-api tasks:create --title="..." [--project_id=N] [--description=...] \
@@ -435,6 +437,104 @@ _upd_detect_mode() {
   return 1
 }
 
+# Prints the path to the projects manifest (same EGLOFF_STATE_ROOT seam as
+# install.sh's record_project_install()).
+_upd_state_manifest_path() {
+  local state_root="${EGLOFF_STATE_ROOT:-${EGLOFF_INSTALL_ROOT:-$HOME/.local/share/egloff-api-skill}-state}"
+  printf '%s/projects.json' "$state_root"
+}
+
+# _upd_write_manifest MANIFEST_FILE JSON — atomic write, mirrors
+# write_config()/install.sh's record_project_install(): mktemp in the same
+# dir under a scoped umask 077, chmod 600, mv -f. Duplicated (not shared)
+# per design: install.sh must remain a single self-contained file runnable
+# via curl | bash.
+_upd_write_manifest() {
+  local manifest_file="$1" json="$2"
+  local dir tmp_file
+  dir="$(dirname "$manifest_file")"
+  mkdir -p "$dir"
+  (
+    umask 077
+    tmp_file="$(mktemp "${dir}/.projects.json.XXXXXX")"
+    printf '%s' "$json" > "$tmp_file"
+    chmod 600 "$tmp_file"
+    mv -f "$tmp_file" "$manifest_file"
+  )
+}
+
+# _upd_reconcile_projects ROOT — reads the projects manifest and, for each
+# entry: prunes it (and reports) if its path no longer exists, repairs it
+# (re-invokes `bash ROOT/install.sh --project PATH [--copy]`) if its skill
+# link is broken or absent, or counts it as healthy otherwise. Prints one
+# summary line, omitted when the manifest is absent. Never aborts update:
+# an absent manifest is silently "nothing to reconcile"; a corrupt one
+# prints a warning and skips reconciliation.
+_upd_reconcile_projects() {
+  local root="$1"
+  local manifest_file
+  manifest_file="$(_upd_state_manifest_path)"
+
+  [ -f "$manifest_file" ] || return 0
+
+  if ! jq -e . "$manifest_file" >/dev/null 2>&1; then
+    echo "warning: project manifest at ${manifest_file} is unreadable — skipping project reconciliation" >&2
+    return 0
+  fi
+
+  local ok=0 repaired=0 pruned=0
+  local pruned_paths=()
+  local path mode link install_args repair_out repair_status
+
+  while IFS= read -r -d '' path && IFS= read -r -d '' mode; do
+    if [ ! -e "$path" ]; then
+      pruned=$((pruned + 1))
+      pruned_paths+=("$path")
+      echo "Pruned missing project install: ${path}"
+      continue
+    fi
+
+    link="${path}/.claude/skills/egloff-api"
+    if { [ -L "$link" ] && [ ! -e "$link" ]; } || { [ ! -e "$link" ] && [ ! -L "$link" ]; }; then
+      install_args=(--project "$path")
+      [ "$mode" = "copy" ] && install_args+=(--copy)
+      if repair_out="$(bash "${root}/install.sh" "${install_args[@]}" 2>&1)"; then
+        repaired=$((repaired + 1))
+      else
+        repair_status=$?
+        echo "warning: failed to repair project install at ${path} (exit ${repair_status})" >&2
+        printf '%s\n' "$repair_out" >&2
+      fi
+    else
+      ok=$((ok + 1))
+    fi
+  done < <(jq -j '.projects[]? | (.path, .mode) | . + "\u0000"' "$manifest_file" 2>/dev/null)
+
+  if [ "$pruned" -gt 0 ]; then
+    local jq_args=() filter='.version=1 | .projects //= []'
+    local i=0 p
+    for p in "${pruned_paths[@]}"; do
+      jq_args+=(--arg "pp${i}" "$p")
+      filter+=" | .projects |= map(select(.path != \$pp${i}))"
+      i=$((i + 1))
+    done
+    local new_json
+    new_json="$(jq "${jq_args[@]}" "$filter" "$manifest_file")"
+    _upd_write_manifest "$manifest_file" "$new_json"
+  fi
+
+  echo "Project installs: ${ok} ok, ${repaired} repaired, ${pruned} pruned"
+}
+
+# _upd_post_update_hook ROOT — runs after a successful update in both
+# bootstrap and local mode: repairs the managed global symlinks if broken,
+# then reconciles per-project installs from the manifest.
+_upd_post_update_hook() {
+  local root="$1"
+  _upd_relink_if_needed "$root"
+  _upd_reconcile_projects "$root"
+}
+
 _upd_require_git() {
   if ! command -v git >/dev/null 2>&1; then
     echo "error: git is required for 'egloff-api update' but was not found on PATH — install git, or use the curl fallback below" >&2
@@ -486,6 +586,11 @@ _upd_update_bootstrap() {
   else
     echo "Updated ${before} -> ${after}"
   fi
+
+  # install.sh is invoked directly from $root (not piped) here so its own
+  # detect_mode() sees the sibling skills/egloff-api/ directory and returns
+  # "local", reusing the already-updated clone instead of re-fetching.
+  _upd_post_update_hook "$root"
 }
 
 # Local-mode update: git fetch + git merge --ff-only @{u} ONLY — never `git
@@ -545,7 +650,7 @@ _upd_update_local() {
   fi
 
   after="$(git -C "$root" rev-parse --short HEAD)"
-  _upd_relink_if_needed "$root"
+  _upd_post_update_hook "$root"
   echo "Updated ${before} -> ${after}"
 }
 

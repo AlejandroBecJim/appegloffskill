@@ -13,6 +13,7 @@ set -euo pipefail
 EGLOFF_REPO_URL="${EGLOFF_REPO_URL:-https://github.com/AlejandroBecJim/appegloffskill.git}"
 EGLOFF_INSTALL_ROOT="${EGLOFF_INSTALL_ROOT:-${HOME}/.local/share/egloff-api-skill}"
 EGLOFF_BIN_DIR="${EGLOFF_BIN_DIR:-${HOME}/.local/bin}"
+EGLOFF_STATE_ROOT="${EGLOFF_STATE_ROOT:-${EGLOFF_INSTALL_ROOT}-state}"
 
 usage() {
   cat <<'EOF'
@@ -24,17 +25,25 @@ Usage:
 
 Also works piped, without cloning first:
   curl -fsSL <raw-url>/install.sh | bash
+
+Requires jq unconditionally (used to record/update the per-project install
+manifest, even without --project). --project installs are tracked at
+<EGLOFF_INSTALL_ROOT>-state/projects.json by default, overridable via the
+EGLOFF_STATE_ROOT env var; 'egloff-api update' reads this manifest to
+repair or prune project installs automatically.
 EOF
 }
 
 # --- Arg parsing -------------------------------------------------------------
 mode="symlink"
 target=""
+project_root=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --project)
-      target="${2:?--project requires a path}/.claude/skills/egloff-api"
+      project_root="${2:?--project requires a path}"
+      target="${project_root}/.claude/skills/egloff-api"
       shift 2
       ;;
     --copy)
@@ -61,6 +70,13 @@ fi
 require_git() {
   if ! command -v git >/dev/null 2>&1; then
     echo "error: git is required to install egloff-api via curl | bash but was not found on PATH — install git and re-run" >&2
+    exit 1
+  fi
+}
+
+require_jq() {
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "error: jq is required to install egloff-api but was not found on PATH — install jq and re-run" >&2
     exit 1
   fi
 }
@@ -170,6 +186,54 @@ link_cli() {
   echo "Linked ${cli_target} -> ${cli_source}"
 }
 
+# record_project_install PROJECT_ROOT MODE — upserts (path, mode,
+# installed_at) into ${EGLOFF_STATE_ROOT}/projects.json, deduped by
+# canonical path. Writes atomically (mkdir -p, mktemp in the same dir under
+# a scoped umask 077, chmod 600, mv -f), mirroring bin/egloff-api's
+# write_config(). Never fails the install: on any jq/write error it warns
+# and returns 0 (the symlink/copy already succeeded).
+record_project_install() {
+  local path="$1" install_mode="$2"
+  local canon_path ts existing filter tmp_file
+
+  if ! canon_path="$(cd -P "$path" 2>/dev/null && pwd)"; then
+    echo "warning: could not canonicalize project path '${path}' — skipping manifest update" >&2
+    return 0
+  fi
+
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  mkdir -p "$EGLOFF_STATE_ROOT" 2>/dev/null || {
+    echo "warning: could not create ${EGLOFF_STATE_ROOT} — skipping manifest update" >&2
+    return 0
+  }
+
+  local manifest_file="${EGLOFF_STATE_ROOT}/projects.json"
+  if [ -r "$manifest_file" ] && existing="$(jq -e . "$manifest_file" 2>/dev/null)"; then
+    :
+  else
+    if [ -r "$manifest_file" ]; then
+      echo "warning: project manifest at ${manifest_file} is corrupt — replacing with a fresh manifest (previous entries lost)" >&2
+    fi
+    existing='{"version":1,"projects":[]}'
+  fi
+
+  filter='.version=1 | .projects=(((.projects//[])|map(select(.path!=$p)))+[{path:$p,mode:$m,installed_at:$t}])'
+
+  (
+    umask 077
+    tmp_file="$(mktemp "${EGLOFF_STATE_ROOT}/.projects.json.XXXXXX")" || exit 1
+    if ! printf '%s' "$existing" | jq --arg p "$canon_path" --arg m "$install_mode" --arg t "$ts" "$filter" > "$tmp_file"; then
+      rm -f "$tmp_file"
+      exit 1
+    fi
+    chmod 600 "$tmp_file"
+    mv -f "$tmp_file" "$manifest_file"
+  ) || echo "warning: could not update project manifest at ${manifest_file}" >&2
+
+  return 0
+}
+
 # path_notice BIN_DIR
 path_notice() {
   local bin_dir="$1"
@@ -193,6 +257,8 @@ EOF
 
 # --- Main flow ----------------------------------------------------------------
 
+require_jq
+
 resolved_mode="$(detect_mode)"
 
 if [ "$resolved_mode" = "local" ]; then
@@ -202,6 +268,11 @@ else
 fi
 
 install_skill "$SOURCE_DIR" "$target" "$mode"
+
+if [ -n "$project_root" ]; then
+  record_project_install "$project_root" "$mode"
+fi
+
 link_cli "$SOURCE_DIR" "$EGLOFF_BIN_DIR" "$resolved_mode"
 path_notice "$EGLOFF_BIN_DIR"
 

@@ -20,7 +20,9 @@ teardown() {
 # build_update_fixture_remote BARE_DIR
 # Like build_fixture_remote, but bin/egloff-api is a real copy of the CLI
 # under test (not the "fixture cli" stub) so a bootstrapped `egloff-api
-# update` actually exercises cmd_update.
+# update` actually exercises cmd_update. Also includes any skills named in
+# EGLOFF_FIXTURE_EXTRA_SKILLS (space-separated), same seam as
+# build_fixture_remote.
 build_update_fixture_remote() {
   local bare_dir="$1"
   local work_dir
@@ -32,6 +34,11 @@ build_update_fixture_remote() {
   mkdir -p "${work_dir}/bin"
   cp "$CLI" "${work_dir}/bin/egloff-api"
   chmod +x "${work_dir}/install.sh" "${work_dir}/bin/egloff-api"
+
+  local extra_name
+  for extra_name in ${EGLOFF_FIXTURE_EXTRA_SKILLS:-}; do
+    add_fixture_skill "$work_dir" "$extra_name"
+  done
 
   git init -q "$work_dir"
   git -C "$work_dir" -c user.email="test@example.com" -c user.name="bats" add -A
@@ -69,8 +76,10 @@ bootstrap_update_fixture() {
 # build_git_local_checkout DEST_DIR — a local checkout (install.sh + skill +
 # real CLI copy) with a real git history and an "origin" upstream, so
 # _upd_detect_mode resolves to "local" and the local-mode git flow (fetch +
-# ff-only merge) has something real to operate on. Prints the origin bare
-# repo path (no trailing newline).
+# ff-only merge) has something real to operate on. Also includes any skills
+# named in EGLOFF_FIXTURE_EXTRA_SKILLS (space-separated), same seam as
+# build_fixture_remote. Prints the origin bare repo path (no trailing
+# newline).
 build_git_local_checkout() {
   local dest_dir="$1"
   mkdir -p "${dest_dir}/skills" "${dest_dir}/bin"
@@ -78,6 +87,11 @@ build_git_local_checkout() {
   cp -R "${REPO_ROOT}/skills/egloff-api" "${dest_dir}/skills/egloff-api"
   cp "$CLI" "${dest_dir}/bin/egloff-api"
   chmod +x "${dest_dir}/install.sh" "${dest_dir}/bin/egloff-api"
+
+  local extra_name
+  for extra_name in ${EGLOFF_FIXTURE_EXTRA_SKILLS:-}; do
+    add_fixture_skill "$dest_dir" "$extra_name"
+  done
 
   local origin_dir
   origin_dir="$(mktemp -d "${SANDBOX_TMP}/origin.XXXXXX")"
@@ -574,6 +588,167 @@ hide_git_from_path() {
   local status_out
   status_out="$(git -C "$checkout" status --porcelain)"
   [ -z "$status_out" ]
+}
+
+# =============================================================================
+# Phase 8: Multi-skill discovery — global repair, project reconciliation,
+# orphan reporting
+# =============================================================================
+
+@test "local update repairs only the broken skill's global link, leaves the healthy one alone" {
+  local checkout origin
+  checkout="${SANDBOX_TMP}/checkout"
+  EGLOFF_FIXTURE_EXTRA_SKILLS="second-skill" origin="$(build_git_local_checkout "$checkout")"
+
+  run bash "${checkout}/install.sh"
+  [ "$status" -eq 0 ]
+  [ -L "${HOME}/.claude/skills/egloff-api" ]
+  [ -L "${HOME}/.claude/skills/second-skill" ]
+
+  local healthy_canon
+  healthy_canon="$(cd -P "${HOME}/.claude/skills/egloff-api" && pwd)"
+
+  rm -f "${HOME}/.claude/skills/second-skill"
+  ln -s "/nonexistent/second-skill" "${HOME}/.claude/skills/second-skill"
+
+  advance_remote "$origin"
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [ -L "${HOME}/.claude/skills/second-skill" ]
+  [ -e "${HOME}/.claude/skills/second-skill" ]
+  [ "$(cd -P "${HOME}/.claude/skills/egloff-api" && pwd)" = "$healthy_canon" ]
+}
+
+@test "local update: a --project-only skill install is never promoted to a global install (evidence gate)" {
+  local checkout origin
+  checkout="${SANDBOX_TMP}/checkout"
+  EGLOFF_FIXTURE_EXTRA_SKILLS="second-skill" origin="$(build_git_local_checkout "$checkout")"
+  advance_remote "$origin"
+
+  local project_dir="${SANDBOX_TMP}/my-project"
+  mkdir -p "$project_dir"
+  run bash "${checkout}/install.sh" --project "$project_dir"
+  [ "$status" -eq 0 ]
+  [ -L "${project_dir}/.claude/skills/second-skill" ]
+  [ ! -e "${HOME}/.claude/skills/second-skill" ]
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [ ! -e "${HOME}/.claude/skills/second-skill" ]
+  [ ! -e "${HOME}/.claude/skills/egloff-api" ]
+}
+
+@test "local update: reconcile installs a newly-added skill into an already-registered project" {
+  local checkout origin
+  checkout="${SANDBOX_TMP}/checkout"
+  origin="$(build_git_local_checkout "$checkout")"
+
+  local project_dir="${SANDBOX_TMP}/my-project"
+  mkdir -p "$project_dir"
+  run bash "${checkout}/install.sh" --project "$project_dir"
+  [ "$status" -eq 0 ]
+  [ -L "${project_dir}/.claude/skills/egloff-api" ]
+  [ ! -e "${project_dir}/.claude/skills/second-skill" ]
+
+  push_fixture_skill "$origin" "second-skill"
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [ -e "${project_dir}/.claude/skills/second-skill" ]
+  [[ "$output" == *"Project installs: 0 ok, 1 repaired, 0 pruned"* ]]
+}
+
+@test "bootstrap update reports a skill removed from the repo as orphaned but leaves it installed" {
+  UPD_REMOTE="${SANDBOX_TMP}/upd-fixture-remote.git"
+  EGLOFF_FIXTURE_EXTRA_SKILLS="second-skill" build_update_fixture_remote "$UPD_REMOTE"
+  export EGLOFF_REPO_URL="$UPD_REMOTE"
+  run bash < "$INSTALL_SH"
+  [ "$status" -eq 0 ]
+  [ -L "${HOME}/.claude/skills/second-skill" ]
+
+  local tmp_clone
+  tmp_clone="$(mktemp -d "${SANDBOX_TMP}/rm-skill.XXXXXX")"
+  git clone -q "$UPD_REMOTE" "$tmp_clone"
+  git -C "$tmp_clone" rm -rq skills/second-skill
+  git -C "$tmp_clone" -c user.email="test@example.com" -c user.name="bats" commit -q -m "remove second-skill"
+  git -C "$tmp_clone" push -q origin main
+  rm -rf "$tmp_clone"
+
+  run bash "${EGLOFF_BIN_DIR}/egloff-api" update
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"second-skill"* ]]
+  [[ "$output" == *"orphan"* ]]
+  [ -L "${HOME}/.claude/skills/second-skill" ]
+}
+
+@test "local update reports a skill removed from the repo as orphaned for a --project install" {
+  local checkout origin
+  checkout="${SANDBOX_TMP}/checkout"
+  EGLOFF_FIXTURE_EXTRA_SKILLS="second-skill" origin="$(build_git_local_checkout "$checkout")"
+
+  local project_dir="${SANDBOX_TMP}/my-project"
+  mkdir -p "$project_dir"
+  run bash "${checkout}/install.sh" --project "$project_dir"
+  [ "$status" -eq 0 ]
+  [ -L "${project_dir}/.claude/skills/second-skill" ]
+
+  local tmp_clone
+  tmp_clone="$(mktemp -d "${SANDBOX_TMP}/rm-skill.XXXXXX")"
+  git clone -q "$origin" "$tmp_clone"
+  git -C "$tmp_clone" rm -rq skills/second-skill
+  git -C "$tmp_clone" -c user.email="test@example.com" -c user.name="bats" commit -q -m "remove second-skill"
+  git -C "$tmp_clone" push -q origin main
+  rm -rf "$tmp_clone"
+
+  advance_remote "$origin"
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"second-skill"* ]]
+  [[ "$output" == *"orphan"* ]]
+  [ -L "${project_dir}/.claude/skills/second-skill" ]
+}
+
+@test "local update reports an orphaned skill even when the checkout path traverses a symlink" {
+  mkdir -p "${SANDBOX_TMP}/real-dir"
+  ln -s "${SANDBOX_TMP}/real-dir" "${SANDBOX_TMP}/symlinked-dir"
+
+  local checkout origin
+  checkout="${SANDBOX_TMP}/symlinked-dir/checkout"
+  EGLOFF_FIXTURE_EXTRA_SKILLS="second-skill" origin="$(build_git_local_checkout "$checkout")"
+
+  run bash "${checkout}/install.sh"
+  [ "$status" -eq 0 ]
+  [ -L "${HOME}/.claude/skills/second-skill" ]
+
+  local tmp_clone
+  tmp_clone="$(mktemp -d "${SANDBOX_TMP}/rm-skill.XXXXXX")"
+  git clone -q "$origin" "$tmp_clone"
+  git -C "$tmp_clone" rm -rq skills/second-skill
+  git -C "$tmp_clone" -c user.email="test@example.com" -c user.name="bats" commit -q -m "remove second-skill"
+  git -C "$tmp_clone" push -q origin main
+  rm -rf "$tmp_clone"
+
+  advance_remote "$origin"
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"second-skill"* ]]
+  [[ "$output" == *"orphan"* ]]
+  [ -L "${HOME}/.claude/skills/second-skill" ]
+}
+
+@test "unrelated third-party skill directory under ~/.claude/skills/ is never reported as orphaned" {
+  bootstrap_update_fixture
+  mkdir -p "${HOME}/.claude/skills/third-party-skill"
+  echo "not managed by us" > "${HOME}/.claude/skills/third-party-skill/SKILL.md"
+  advance_remote "$UPD_REMOTE"
+
+  run bash "${EGLOFF_BIN_DIR}/egloff-api" update
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"third-party-skill"* ]]
+  [ -d "${HOME}/.claude/skills/third-party-skill" ]
 }
 
 # =============================================================================

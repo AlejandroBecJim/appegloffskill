@@ -64,3 +64,43 @@ run_piped() {
   [ "$status" -eq 0 ]
   [ -d "${EGLOFF_INSTALL_ROOT}/.git" ]
 }
+
+@test "multi-skill: bootstrap installs every fixture skill globally" {
+  local multi_remote="${SANDBOX_TMP}/multi-fixture-remote.git"
+  EGLOFF_FIXTURE_EXTRA_SKILLS="second-skill" build_fixture_remote "$multi_remote"
+  export EGLOFF_REPO_URL="$multi_remote"
+
+  run run_piped
+  [ "$status" -eq 0 ]
+  [ -L "${HOME}/.claude/skills/egloff-api" ]
+  [ -L "${HOME}/.claude/skills/second-skill" ]
+}
+
+@test "empty skills/ directory: bootstrap warns and exits 0, other install steps still run" {
+  local empty_remote="${SANDBOX_TMP}/empty-skills-remote.git"
+  local work_dir
+  work_dir="$(mktemp -d "${SANDBOX_TMP}/empty-skills-src.XXXXXX")"
+  mkdir -p "${work_dir}/skills" "${work_dir}/bin"
+  touch "${work_dir}/skills/.gitkeep"
+  cat > "${work_dir}/bin/egloff-api" <<'EOF'
+#!/usr/bin/env bash
+echo "fixture cli"
+EOF
+  chmod +x "${work_dir}/bin/egloff-api"
+
+  git init -q "$work_dir"
+  git -C "$work_dir" -c user.email="test@example.com" -c user.name="bats" add -A
+  git -C "$work_dir" -c user.email="test@example.com" -c user.name="bats" commit -q -m "empty skills fixture"
+  git -C "$work_dir" branch -M main
+
+  git init -q --bare "$empty_remote"
+  git -C "$work_dir" push -q "$empty_remote" main
+  git -C "$empty_remote" symbolic-ref HEAD refs/heads/main
+
+  export EGLOFF_REPO_URL="$empty_remote"
+  run run_piped
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"warning:"* ]]
+  [ ! -d "${HOME}/.claude/skills" ]
+  [ -L "${EGLOFF_BIN_DIR}/egloff-api" ]
+}

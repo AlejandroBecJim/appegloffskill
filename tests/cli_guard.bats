@@ -19,7 +19,10 @@ teardown() {
   run bash "${checkout}/install.sh"
   [ "$status" -eq 0 ]
   [ -L "${EGLOFF_BIN_DIR}/egloff-api" ]
-  [ "$(readlink "${EGLOFF_BIN_DIR}/egloff-api")" = "${checkout}/bin/egloff-api" ]
+
+  local canon_checkout
+  canon_checkout="$(cd -P "$checkout" && pwd)"
+  [ "$(readlink "${EGLOFF_BIN_DIR}/egloff-api")" = "${canon_checkout}/bin/egloff-api" ]
 }
 
 @test "bin/egloff-api absent warns, skips symlink, still installs skill, exits 0" {

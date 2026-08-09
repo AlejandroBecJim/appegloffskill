@@ -8,9 +8,49 @@
 REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
 INSTALL_SH="${REPO_ROOT}/install.sh"
 
+# add_fixture_skill TREE_DIR NAME
+# Writes a minimal synthetic skill tree at TREE_DIR/skills/NAME/ (SKILL.md +
+# assets/), matching the shape build_fixture_remote uses for egloff-api.
+# Used both directly (against a plain checkout dir) and by the git-remote
+# builders below (against a work_dir, before it's committed).
+add_fixture_skill() {
+  local tree_dir="$1" name="$2"
+
+  mkdir -p "${tree_dir}/skills/${name}/assets"
+  cat > "${tree_dir}/skills/${name}/SKILL.md" <<EOF
+# fixture skill: ${name}
+EOF
+  cat > "${tree_dir}/skills/${name}/assets/${name}.sh" <<EOF
+#!/usr/bin/env bash
+echo "fixture asset: ${name}"
+EOF
+  chmod +x "${tree_dir}/skills/${name}/assets/${name}.sh"
+}
+
+# push_fixture_skill BARE_DIR NAME
+# Adds a new fixture skill to an already-pushed bare remote, by cloning it,
+# writing the skill tree with add_fixture_skill, committing, and pushing —
+# mirrors advance_remote (tests/cli_update.bats), but for adding a skill
+# rather than an empty commit. Used to simulate "a skill was added upstream
+# since this project/checkout was last installed/updated".
+push_fixture_skill() {
+  local bare_dir="$1" name="$2"
+  local tmp_clone
+  tmp_clone="$(mktemp -d "${SANDBOX_TMP}/push-skill.XXXXXX")"
+  git clone -q "$bare_dir" "$tmp_clone"
+  add_fixture_skill "$tmp_clone" "$name"
+  git -C "$tmp_clone" -c user.email="test@example.com" -c user.name="bats" add -A
+  git -C "$tmp_clone" -c user.email="test@example.com" -c user.name="bats" commit -q -m "add fixture skill ${name}"
+  git -C "$tmp_clone" push -q origin main
+  rm -rf "$tmp_clone"
+}
+
 # build_fixture_remote BARE_DIR [with-cli|without-cli]
 # Creates a bare git repo at BARE_DIR containing a committed skills/egloff-api/
-# skill tree, and bin/egloff-api unless "without-cli" is passed.
+# skill tree, and bin/egloff-api unless "without-cli" is passed. Also
+# includes any skills named in EGLOFF_FIXTURE_EXTRA_SKILLS (space-separated),
+# so tests can opt a fixture remote into a multi-skill tree without changing
+# this function's positional signature.
 build_fixture_remote() {
   local bare_dir="$1"
   local include_cli="${2:-with-cli}"
@@ -35,6 +75,11 @@ echo "fixture cli"
 EOF
     chmod +x "${work_dir}/bin/egloff-api"
   fi
+
+  local extra_name
+  for extra_name in ${EGLOFF_FIXTURE_EXTRA_SKILLS:-}; do
+    add_fixture_skill "$work_dir" "$extra_name"
+  done
 
   git init -q "$work_dir"
   git -C "$work_dir" -c user.email="test@example.com" -c user.name="bats" add -A

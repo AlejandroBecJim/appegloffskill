@@ -444,6 +444,19 @@ _upd_state_manifest_path() {
   printf '%s/projects.json' "$state_root"
 }
 
+# _upd_discover_skills SOURCE_DIR — prints one skill name per line for every
+# directory under SOURCE_DIR/skills/. Duplicated (not shared) from
+# install.sh's discover_skills() per design: install.sh must remain a single
+# self-contained file runnable via curl | bash.
+_upd_discover_skills() {
+  local source_dir="$1"
+  local d
+  for d in "${source_dir}"/skills/*/ ; do
+    [ -d "$d" ] || continue
+    basename "${d%/}"
+  done
+}
+
 # _upd_write_manifest MANIFEST_FILE JSON — atomic write, mirrors
 # write_config()/install.sh's record_project_install(): mktemp in the same
 # dir under a scoped umask 077, chmod 600, mv -f. Duplicated (not shared)
@@ -465,9 +478,10 @@ _upd_write_manifest() {
 
 # _upd_reconcile_projects ROOT — reads the projects manifest and, for each
 # entry: prunes it (and reports) if its path no longer exists, repairs it
-# (re-invokes `bash ROOT/install.sh --project PATH [--copy]`) if its skill
-# link is broken or absent, or counts it as healthy otherwise. Prints one
-# summary line, omitted when the manifest is absent. Never aborts update:
+# (re-invokes `bash ROOT/install.sh --project PATH [--copy]`, which installs
+# every discovered skill in one call) if ANY discovered skill's link under
+# that project is broken or absent, or counts it as healthy otherwise.
+# Prints one summary line, omitted when the manifest is absent. Never aborts update:
 # an absent manifest is silently "nothing to reconcile"; a corrupt one
 # prints a warning and skips reconciliation.
 _upd_reconcile_projects() {
@@ -482,9 +496,13 @@ _upd_reconcile_projects() {
     return 0
   fi
 
+  local skill_names
+  skill_names="$(_upd_discover_skills "$root")"
+
   local ok=0 repaired=0 pruned=0
   local pruned_paths=()
   local path mode link install_args repair_out repair_status
+  local name unhealthy
 
   while IFS= read -r -d '' path && IFS= read -r -d '' mode; do
     if [ ! -e "$path" ]; then
@@ -494,8 +512,17 @@ _upd_reconcile_projects() {
       continue
     fi
 
-    link="${path}/.claude/skills/egloff-api"
-    if { [ -L "$link" ] && [ ! -e "$link" ]; } || { [ ! -e "$link" ] && [ ! -L "$link" ]; }; then
+    unhealthy=0
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
+      link="${path}/.claude/skills/${name}"
+      if { [ -L "$link" ] && [ ! -e "$link" ]; } || { [ ! -e "$link" ] && [ ! -L "$link" ]; }; then
+        unhealthy=1
+        break
+      fi
+    done <<< "$skill_names"
+
+    if [ "$unhealthy" -eq 1 ]; then
       install_args=(--project "$path")
       [ "$mode" = "copy" ] && install_args+=(--copy)
       if repair_out="$(bash "${root}/install.sh" "${install_args[@]}" 2>&1)"; then
@@ -526,13 +553,72 @@ _upd_reconcile_projects() {
   echo "Project installs: ${ok} ok, ${repaired} repaired, ${pruned} pruned"
 }
 
+# _upd_report_orphan_skills ROOT — scans the global skills dir and every
+# manifest project's skills dir for symlinks whose basename is no longer
+# among ROOT's discovered skills, and reports (never deletes) them. Only
+# entries that are symlinks resolving inside "${root}/skills/" or
+# "${EGLOFF_INSTALL_ROOT}/skills/" are considered ours to report — this is
+# how we distinguish a skill we installed (now removed upstream) from an
+# unrelated third-party skill directory a user may also keep under
+# ~/.claude/skills/. Copy-mode installs (real directories, not symlinks)
+# have no such provenance and are a known, accepted reporting gap.
+_upd_report_orphan_skills() {
+  local root="$1"
+  local skill_names
+  skill_names="$(_upd_discover_skills "$root")"
+
+  local install_root="${EGLOFF_INSTALL_ROOT:-$HOME/.local/share/egloff-api-skill}"
+
+  local targets=("${HOME}/.claude/skills")
+  local manifest_file
+  manifest_file="$(_upd_state_manifest_path)"
+  if [ -f "$manifest_file" ] && jq -e . "$manifest_file" >/dev/null 2>&1; then
+    local proj_path
+    while IFS= read -r -d '' proj_path; do
+      [ -n "$proj_path" ] || continue
+      targets+=("${proj_path}/.claude/skills")
+    done < <(jq -j '.projects[]? | .path + "\u0000"' "$manifest_file" 2>/dev/null)
+  fi
+
+  local dir entry basename_entry raw_target name found
+  for dir in "${targets[@]}"; do
+    [ -d "$dir" ] || continue
+    for entry in "$dir"/*; do
+      [ -L "$entry" ] || continue
+      basename_entry="$(basename "$entry")"
+
+      found=0
+      while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        if [ "$name" = "$basename_entry" ]; then
+          found=1
+          break
+        fi
+      done <<< "$skill_names"
+      [ "$found" -eq 1 ] && continue
+
+      raw_target="$(readlink "$entry")"
+      case "$raw_target" in
+        "${root}/skills/"*|"${install_root}/skills/"*)
+          echo "orphaned skill (no longer in repo, left untouched): ${basename_entry} at ${entry}"
+          ;;
+        *)
+          continue
+          ;;
+      esac
+    done
+  done
+}
+
 # _upd_post_update_hook ROOT — runs after a successful update in both
 # bootstrap and local mode: repairs the managed global symlinks if broken,
-# then reconciles per-project installs from the manifest.
+# reconciles per-project installs from the manifest, then reports (never
+# deletes) any installed skill no longer present in the source repo.
 _upd_post_update_hook() {
   local root="$1"
   _upd_relink_if_needed "$root"
   _upd_reconcile_projects "$root"
+  _upd_report_orphan_skills "$root"
 }
 
 _upd_require_git() {
@@ -544,16 +630,56 @@ _upd_require_git() {
 }
 
 # Re-runs install.sh (only) when the managed global symlinks look broken
-# (a symlink that exists but no longer resolves). Never unconditional — a
-# --project-only install intentionally has no global targets and must not
-# be silently converted into a global one.
+# (a symlink that exists but no longer resolves) for any discovered skill,
+# or the CLI symlink itself. Never unconditional — a --project-only install
+# intentionally has zero global skill links and must not be silently
+# converted into a global one.
+#
+# Evidence gate (D5): an absent (never-installed) skill link is only
+# treated as "needs repair" when there is already evidence of a global
+# install for this repo — i.e. at least one OTHER discovered skill already
+# has a global link. Without that evidence, absence is the expected,
+# healthy state of a --project-only install, and must never trigger a
+# global (re)install as a side effect.
 _upd_relink_if_needed() {
   local root="$1"
   local bin_dir="${EGLOFF_BIN_DIR:-$HOME/.local/bin}"
   local cli_target="${bin_dir}/egloff-api"
-  local skill_target="${HOME}/.claude/skills/egloff-api"
+  local skills_root="${HOME}/.claude/skills"
 
-  if { [ -L "$cli_target" ] && [ ! -e "$cli_target" ]; } || { [ -L "$skill_target" ] && [ ! -e "$skill_target" ]; }; then
+  local needs_relink=0
+
+  if [ -L "$cli_target" ] && [ ! -e "$cli_target" ]; then
+    needs_relink=1
+  fi
+
+  local skill_names
+  skill_names="$(_upd_discover_skills "$root")"
+
+  local has_global_evidence=0
+  local has_broken_skill=0
+  local has_absent_skill=0
+  local name target
+
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    target="${skills_root}/${name}"
+    if [ -L "$target" ] && [ ! -e "$target" ]; then
+      has_broken_skill=1
+    elif [ -e "$target" ] || [ -L "$target" ]; then
+      has_global_evidence=1
+    else
+      has_absent_skill=1
+    fi
+  done <<< "$skill_names"
+
+  if [ "$has_broken_skill" -eq 1 ]; then
+    needs_relink=1
+  elif [ "$has_global_evidence" -eq 1 ] && [ "$has_absent_skill" -eq 1 ]; then
+    needs_relink=1
+  fi
+
+  if [ "$needs_relink" -eq 1 ]; then
     bash "${root}/install.sh"
   fi
 }

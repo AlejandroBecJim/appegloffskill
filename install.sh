@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# install.sh — install the egloff-api Claude Code skill and CLI, globally or
-# into a project. Works identically whether run from a local checkout
-# (./install.sh) or piped (curl -fsSL <raw-url>/install.sh | bash).
+# install.sh — install every Claude Code skill under skills/ (egloff-api and
+# any others) and the egloff-api CLI, globally or into a project. Works
+# identically whether run from a local checkout (./install.sh) or piped
+# (curl -fsSL <raw-url>/install.sh | bash).
 #
 # See `usage()` below or run with -h/--help.
 
@@ -18,8 +19,8 @@ EGLOFF_STATE_ROOT="${EGLOFF_STATE_ROOT:-${EGLOFF_INSTALL_ROOT}-state}"
 usage() {
   cat <<'EOF'
 Usage:
-  ./install.sh                    Install globally (~/.claude/skills/egloff-api)
-  ./install.sh --project PATH     Install into PATH/.claude/skills/egloff-api
+  ./install.sh                    Install all skills globally (~/.claude/skills)
+  ./install.sh --project PATH     Install all skills into PATH/.claude/skills
   ./install.sh --copy             Copy files instead of symlinking (default: symlink)
   ./install.sh -h|--help          Show this help
 
@@ -36,14 +37,14 @@ EOF
 
 # --- Arg parsing -------------------------------------------------------------
 mode="symlink"
-target=""
+dest_root=""
 project_root=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --project)
       project_root="${2:?--project requires a path}"
-      target="${project_root}/.claude/skills/egloff-api"
+      dest_root="${project_root}/.claude/skills"
       shift 2
       ;;
     --copy)
@@ -61,8 +62,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -z "$target" ]; then
-  target="${HOME}/.claude/skills/egloff-api"
+if [ -z "$dest_root" ]; then
+  dest_root="${HOME}/.claude/skills"
 fi
 
 # --- Functions ---------------------------------------------------------------
@@ -123,17 +124,28 @@ bootstrap_source() {
   SOURCE_DIR="$EGLOFF_INSTALL_ROOT"
 }
 
-# install_skill SOURCE_DIR TARGET_PATH MODE
+# discover_skills SOURCE_DIR — prints one skill name per line for every
+# directory (not file) directly under SOURCE_DIR/skills/. Sorted, POSIX
+# glob-based (no `ls -1`/`find` name-parsing pitfalls); `*/` already skips
+# dotfiles, and the `-d` guard handles the literal-glob no-match case
+# without needing a global `shopt -s nullglob`.
+discover_skills() {
+  local source_dir="$1"
+  local d
+  for d in "${source_dir}"/skills/*/ ; do
+    [ -d "$d" ] || continue
+    basename "${d%/}"
+  done
+}
+
+# install_skill SOURCE_DIR SKILL_NAME DEST_ROOT MODE
 install_skill() {
   local source_dir="$1"
-  local target_path="$2"
-  local install_mode="$3"
-  local skill_source="${source_dir}/skills/egloff-api"
-
-  if [ ! -d "$skill_source" ]; then
-    echo "error: expected ${skill_source} to exist" >&2
-    exit 1
-  fi
+  local skill_name="$2"
+  local dest_root="$3"
+  local install_mode="$4"
+  local skill_source="${source_dir}/skills/${skill_name}"
+  local target_path="${dest_root}/${skill_name}"
 
   mkdir -p "$(dirname "$target_path")"
 
@@ -262,12 +274,20 @@ require_jq
 resolved_mode="$(detect_mode)"
 
 if [ "$resolved_mode" = "local" ]; then
-  SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  SOURCE_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 else
   bootstrap_source
 fi
 
-install_skill "$SOURCE_DIR" "$target" "$mode"
+skill_names="$(discover_skills "$SOURCE_DIR")"
+if [ -z "$skill_names" ]; then
+  echo "warning: no skill directories found under ${SOURCE_DIR}/skills — nothing to install" >&2
+else
+  while IFS= read -r skill_name; do
+    [ -n "$skill_name" ] || continue
+    install_skill "$SOURCE_DIR" "$skill_name" "$dest_root" "$mode"
+  done <<< "$skill_names"
+fi
 
 if [ -n "$project_root" ]; then
   record_project_install "$project_root" "$mode"

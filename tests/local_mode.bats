@@ -175,3 +175,64 @@ teardown() {
   local manifest="${EGLOFF_INSTALL_ROOT}-state/projects.json"
   [ "$(jq -r '.projects | length' "$manifest")" = "1" ]
 }
+
+# =============================================================================
+# Multi-skill discovery and installation
+# =============================================================================
+
+@test "multi-skill: both fixture skills are installed under global .claude/skills/" {
+  local checkout="${SANDBOX_TMP}/checkout"
+  build_local_checkout "$checkout"
+  add_fixture_skill "$checkout" "second-skill"
+
+  run bash "${checkout}/install.sh"
+  [ "$status" -eq 0 ]
+  [ -L "${HOME}/.claude/skills/egloff-api" ]
+  [ -L "${HOME}/.claude/skills/second-skill" ]
+
+  local canon_checkout
+  canon_checkout="$(cd -P "$checkout" && pwd)"
+  [ "$(readlink "${HOME}/.claude/skills/second-skill")" = "${canon_checkout}/skills/second-skill" ]
+}
+
+@test "multi-skill: both fixture skills are installed under --project PATH/.claude/skills/, symlink mode" {
+  local checkout="${SANDBOX_TMP}/checkout"
+  build_local_checkout "$checkout"
+  add_fixture_skill "$checkout" "second-skill"
+
+  local project_dir="${SANDBOX_TMP}/my-project"
+  mkdir -p "$project_dir"
+
+  run bash "${checkout}/install.sh" --project "$project_dir"
+  [ "$status" -eq 0 ]
+  [ -L "${project_dir}/.claude/skills/egloff-api" ]
+  [ -L "${project_dir}/.claude/skills/second-skill" ]
+}
+
+@test "multi-skill: both fixture skills are installed under --project PATH/.claude/skills/, --copy mode" {
+  local checkout="${SANDBOX_TMP}/checkout"
+  build_local_checkout "$checkout"
+  add_fixture_skill "$checkout" "second-skill"
+
+  local project_dir="${SANDBOX_TMP}/my-project"
+  mkdir -p "$project_dir"
+
+  run bash "${checkout}/install.sh" --project "$project_dir" --copy
+  [ "$status" -eq 0 ]
+  [ -d "${project_dir}/.claude/skills/egloff-api" ]
+  [ ! -L "${project_dir}/.claude/skills/egloff-api" ]
+  [ -d "${project_dir}/.claude/skills/second-skill" ]
+  [ ! -L "${project_dir}/.claude/skills/second-skill" ]
+  [ -f "${project_dir}/.claude/skills/second-skill/SKILL.md" ]
+}
+
+@test "stray file directly under skills/ is not installed as a skill" {
+  local checkout="${SANDBOX_TMP}/checkout"
+  build_local_checkout "$checkout"
+  echo "not a skill" > "${checkout}/skills/README.md"
+
+  run bash "${checkout}/install.sh"
+  [ "$status" -eq 0 ]
+  [ -L "${HOME}/.claude/skills/egloff-api" ]
+  [ ! -e "${HOME}/.claude/skills/README.md" ]
+}

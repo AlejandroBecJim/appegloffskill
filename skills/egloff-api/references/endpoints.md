@@ -63,6 +63,17 @@ duplicarla. Sin `topic_key`, cada llamada siempre crea una fila nueva
 `created_by` y `tenant_id` siempre se asignan del lado del servidor desde el
 token autenticado; enviarlos en el body no tiene efecto.
 
+## Proyectos — `/api/projects`
+
+| Method | Path | Notas |
+|---|---|---|
+| GET | `/api/projects` | Lista paginada, solo el tenant actual. `?search=` coincide parcialmente (case-insensitive) con `name`. Solo lectura: no hay POST/PUT/DELETE |
+
+Campos de cada proyecto en la respuesta: `id` (integer), `name` (string),
+`client_id` (integer), `description` (string, nullable), `status` (string),
+`started_at` (date, nullable), `delivered_at` (date, nullable),
+`created_at`/`updated_at` (timestamps ISO 8601).
+
 ## Errores
 
 | Status | Significado |

@@ -27,6 +27,7 @@ Cargar cuando se pida enviar, sincronizar o leer tareas/pendientes/entradas de c
 | Listar/buscar tareas | `tasks:list` |
 | Guardar una memoria/decisión/nota de contexto remotamente (estilo Engram) | `context:create --topic_key=...` (upsert) o sin él (siempre crea una nueva) |
 | Listar/buscar entradas de contexto | `context:list --search=...` |
+| Listar/buscar proyectos (p. ej. para resolver un `--project_id` cuando solo conocés el nombre) | `projects:list --search=...` |
 | Reglas exactas de campos, enums de status/type, formas de error | `references/endpoints.md` |
 
 ## Pasos de ejecución

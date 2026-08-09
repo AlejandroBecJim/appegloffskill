@@ -23,15 +23,40 @@ curl -fsSL https://raw.githubusercontent.com/AlejandroBecJim/appegloffskill/main
 ```
 
 El enlace simbólico (opción por defecto) permite actualizar en el mismo
-lugar: vuelve a ejecutar el instalador para obtener las nuevas versiones.
-Ejecuta `curl -fsSL .../install.sh | bash -s -- --help` para ver la lista
-completa de flags (o `./install.sh --help` desde una copia local).
+lugar. Ejecuta `curl -fsSL .../install.sh | bash -s -- --help` para ver la
+lista completa de flags (o `./install.sh --help` desde una copia local).
 
 > **Actualizar desde una instalación creada antes de este cambio**: vuelve a
 > ejecutar el instalador una vez. Las instalaciones antiguas apuntan
 > (symlink) a una ruta que ya no existe tras este cambio, por lo que Claude
 > Code dejará de encontrar la skill silenciosamente hasta que vuelvas a
 > ejecutar `install.sh`.
+
+## Actualización
+
+Una vez instalado, la forma recomendada de actualizar es el propio CLI:
+
+```bash
+egloff-api update
+```
+
+Detecta automáticamente si la instalación es global (curl-instalada) o un
+checkout local (clon de desarrollo), y actualiza cada una de forma segura:
+en checkouts locales nunca descarta cambios sin confirmar (aborta si hay
+cambios sin commitear, `HEAD` desacoplado, sin upstream configurado, o si
+la rama divergió). El one-liner de `curl | bash` sigue documentado como
+alternativa/fallback y como forma de instalación inicial:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AlejandroBecJim/appegloffskill/main/install.sh | bash
+```
+
+> **Limitación conocida**: `egloff-api update` en modo local solo repara
+> automáticamente los symlinks globales por defecto (`~/.local/bin/egloff-api`
+> y `~/.claude/skills/egloff-api`). Una instalación hecha solo con
+> `--project PATH` cuyo symlink de proyecto quede roto no se auto-repara
+> todavía — reinstala manualmente con `install.sh --project PATH` (seguimiento
+> en el issue #15).
 
 ## Configuración
 
@@ -85,6 +110,7 @@ para el contrato completo.
 ## Requisitos
 
 - `curl`, `jq`
+- `git` (solo para `egloff-api update`)
 - Una instancia de app-egloff en ejecución y un token de API de Sanctum válido
 
 ## Licencia

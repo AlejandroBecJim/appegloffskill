@@ -13,6 +13,7 @@
 # Usage:
 #   egloff-api                              Interactive setup assistant (no args)
 #   egloff-api doctor                       Read-only diagnostics
+#   egloff-api update                       Update this CLI/skill in place (git)
 #   egloff-api config show|set-url|set-token
 #   egloff-api tasks:list [--search=TEXT]
 #   egloff-api tasks:create --title="..." [--project_id=N] [--description=...] \
@@ -336,6 +337,13 @@ cmd_doctor() {
     echo "[skip] connectivity: no token to test"
   fi
 
+  local upd_mode
+  if upd_mode="$(_upd_detect_mode 2>/dev/null)"; then
+    echo "[info] install mode: ${upd_mode} — run 'egloff-api update' to refresh"
+  else
+    echo "[info] install mode: unknown — run 'egloff-api update' for details"
+  fi
+
   return $exit_code
 }
 
@@ -371,6 +379,197 @@ cmd_config() {
       exit 1
       ;;
   esac
+}
+
+# =============================================================================
+# update — self-update: refresh this CLI/skill, in bootstrap or local mode.
+# install.sh is never sourced (it runs its install flow at top level) — it's
+# always invoked as a subprocess. Helper prefix `_upd_*` marks these
+# update-only internals.
+# =============================================================================
+
+_upd_curl_hint() {
+  echo "  curl -fsSL https://raw.githubusercontent.com/AlejandroBecJim/appegloffskill/main/install.sh | bash" >&2
+}
+
+# Prints the canonical path of the running CLI script on stdout, following
+# symlinks one hop at a time (portable: works with both BSD/macOS `readlink`,
+# which has no -f, and GNU/Linux `readlink -f`). Capped at 40 hops as a
+# cycle guard.
+_upd_resolve_self() {
+  local p="${BASH_SOURCE[0]}" d n=0
+  [[ "$p" != /* ]] && p="$PWD/$p"
+  while [ -L "$p" ]; do
+    n=$((n + 1))
+    [ "$n" -gt 40 ] && return 1
+    d="$(cd -P "$(dirname "$p")" && pwd)"
+    p="$(readlink "$p")"
+    [[ "$p" != /* ]] && p="$d/$p"
+  done
+  printf '%s/%s' "$(cd -P "$(dirname "$p")" && pwd)" "$(basename "$p")"
+}
+
+# Prints "bootstrap" or "local" on stdout; returns 1 (prints nothing) when
+# the install mode cannot be determined.
+_upd_detect_mode() {
+  local self self_root install_root
+  self="$(_upd_resolve_self)" || return 1
+  self_root="$(cd -P "$(dirname "$(dirname "$self")")" && pwd)"
+
+  install_root="${EGLOFF_INSTALL_ROOT:-$HOME/.local/share/egloff-api-skill}"
+  if [ -d "$install_root" ]; then
+    install_root="$(cd -P "$install_root" && pwd)"
+  fi
+
+  if [ "$self_root" = "$install_root" ]; then
+    printf 'bootstrap'
+    return 0
+  fi
+
+  if [ -f "${self_root}/install.sh" ] && [ -d "${self_root}/.git" ]; then
+    printf 'local'
+    return 0
+  fi
+
+  return 1
+}
+
+_upd_require_git() {
+  if ! command -v git >/dev/null 2>&1; then
+    echo "error: git is required for 'egloff-api update' but was not found on PATH — install git, or use the curl fallback below" >&2
+    _upd_curl_hint
+    return 1
+  fi
+}
+
+# Re-runs install.sh (only) when the managed global symlinks look broken
+# (a symlink that exists but no longer resolves). Never unconditional — a
+# --project-only install intentionally has no global targets and must not
+# be silently converted into a global one.
+_upd_relink_if_needed() {
+  local root="$1"
+  local bin_dir="${EGLOFF_BIN_DIR:-$HOME/.local/bin}"
+  local cli_target="${bin_dir}/egloff-api"
+  local skill_target="${HOME}/.claude/skills/egloff-api"
+
+  if { [ -L "$cli_target" ] && [ ! -e "$cli_target" ]; } || { [ -L "$skill_target" ] && [ ! -e "$skill_target" ]; }; then
+    bash "${root}/install.sh"
+  fi
+}
+
+# Bootstrap-mode update: reuses install.sh's own fetch+reset logic against
+# the CLI-owned clone at EGLOFF_INSTALL_ROOT. install.sh is piped through
+# stdin from a NEUTRAL cwd (never run directly from inside SELF_ROOT) —
+# install.sh's own detect_mode() checks for a sibling skills/egloff-api/
+# directory, which is true inside EGLOFF_INSTALL_ROOT, and would misclassify
+# this as local mode (skipping the fetch+reset entirely). Piping via stdin
+# from elsewhere reproduces exact `curl | bash` semantics.
+_upd_update_bootstrap() {
+  local root="$1" before after tmpdir status_code=0
+
+  before="$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+  tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/egloff-api-update.XXXXXX")"
+  ( cd "$tmpdir" && bash -s -- ) < "${root}/install.sh" || status_code=$?
+  rm -rf "$tmpdir"
+
+  if [ "$status_code" -ne 0 ]; then
+    echo "error: update failed (install.sh exited ${status_code})" >&2
+    _upd_curl_hint
+    return 1
+  fi
+
+  after="$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  if [ "$before" = "$after" ]; then
+    echo "Already up to date (${after})"
+  else
+    echo "Updated ${before} -> ${after}"
+  fi
+}
+
+# Local-mode update: git fetch + git merge --ff-only @{u} ONLY — never `git
+# pull`, `reset --hard`, or any force/rebase. Every precondition below
+# aborts (exit 1, zero mutation) before any git command that could touch
+# history.
+_upd_update_local() {
+  local root="$1" branch upstream local_sha upstream_sha base_sha before after
+  local status_out fetch_err merge_err
+
+  status_out="$(git -C "$root" status --porcelain 2>&1)"
+  if [ -n "$status_out" ]; then
+    echo "error: local checkout ${root} has uncommitted changes — commit or stash them, then re-run 'egloff-api update'" >&2
+    return 1
+  fi
+
+  if ! branch="$(git -C "$root" symbolic-ref -q --short HEAD)"; then
+    echo "error: ${root} has a detached HEAD — 'git -C ${root} checkout <branch>', then re-run 'egloff-api update'" >&2
+    return 1
+  fi
+
+  if ! upstream="$(git -C "$root" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)"; then
+    echo "error: branch ${branch} in ${root} has no upstream — 'git -C ${root} branch --set-upstream-to=origin/${branch}', then re-run 'egloff-api update'" >&2
+    return 1
+  fi
+
+  if ! fetch_err="$(git -C "$root" fetch 2>&1)"; then
+    echo "error: could not reach the remote — check your connection" >&2
+    echo "$fetch_err" >&2
+    return 1
+  fi
+
+  local_sha="$(git -C "$root" rev-parse '@')"
+  upstream_sha="$(git -C "$root" rev-parse '@{u}')"
+  base_sha="$(git -C "$root" merge-base '@' '@{u}')"
+  before="$(git -C "$root" rev-parse --short HEAD)"
+
+  if [ "$local_sha" = "$upstream_sha" ]; then
+    echo "Already up to date (${before})"
+    return 0
+  fi
+
+  if [ "$upstream_sha" = "$base_sha" ]; then
+    echo "Local checkout is ahead of upstream; nothing to pull"
+    return 0
+  fi
+
+  if [ "$local_sha" != "$base_sha" ]; then
+    echo "error: ${branch} in ${root} has diverged from ${upstream} — resolve it manually (rebase/merge), then re-run 'egloff-api update'" >&2
+    return 1
+  fi
+
+  if ! merge_err="$(git -C "$root" merge --ff-only '@{u}' 2>&1)"; then
+    echo "error: ${merge_err}" >&2
+    echo "checkout: ${root}" >&2
+    return 1
+  fi
+
+  after="$(git -C "$root" rev-parse --short HEAD)"
+  _upd_relink_if_needed "$root"
+  echo "Updated ${before} -> ${after}"
+}
+
+cmd_update() {
+  _upd_require_git || return 1
+
+  local self self_root mode
+  self="$(_upd_resolve_self)" || {
+    echo "error: cannot determine how egloff-api was installed (could not resolve its own path)" >&2
+    _upd_curl_hint
+    return 1
+  }
+  self_root="$(cd -P "$(dirname "$(dirname "$self")")" && pwd)"
+
+  mode="$(_upd_detect_mode)" || {
+    echo "error: cannot determine how egloff-api was installed (resolved to ${self_root})" >&2
+    _upd_curl_hint
+    return 1
+  }
+
+  if [ "$mode" = "bootstrap" ]; then
+    _upd_update_bootstrap "$self_root"
+  else
+    _upd_update_local "$self_root"
+  fi
 }
 
 # =============================================================================
@@ -480,6 +679,9 @@ main() {
     doctor)
       cmd_doctor
       ;;
+    update)
+      cmd_update
+      ;;
     config)
       cmd_config "$@"
       ;;
@@ -538,7 +740,7 @@ main() {
       request DELETE "/api/context-entries/${1:?context entry id required}"
       ;;
     *)
-      echo "usage: egloff-api [tasks:list|tasks:create|tasks:get|tasks:update|tasks:delete|context:list|context:create|context:get|context:update|context:delete|config|doctor] [--key=value ...]" >&2
+      echo "usage: egloff-api [tasks:list|tasks:create|tasks:get|tasks:update|tasks:delete|context:list|context:create|context:get|context:update|context:delete|config|doctor|update] [--key=value ...]" >&2
       exit 1
       ;;
   esac

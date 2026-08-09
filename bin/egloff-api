@@ -28,6 +28,7 @@
 #   egloff-api context:get ID
 #   egloff-api context:update ID --title="..." ...
 #   egloff-api context:delete ID
+#   egloff-api projects:list [--search=TEXT]
 #
 # context:create with --topic_key upserts (200 = updated, 201 = created).
 # Without --topic_key it always creates a new row.
@@ -739,8 +740,14 @@ main() {
       require_creds
       request DELETE "/api/context-entries/${1:?context entry id required}"
       ;;
+    projects:list)
+      read_config
+      require_creds
+      qs=$(args_to_query "$@")
+      request GET "/api/projects${qs:+?$qs}"
+      ;;
     *)
-      echo "usage: egloff-api [tasks:list|tasks:create|tasks:get|tasks:update|tasks:delete|context:list|context:create|context:get|context:update|context:delete|config|doctor|update] [--key=value ...]" >&2
+      echo "usage: egloff-api [tasks:list|tasks:create|tasks:get|tasks:update|tasks:delete|context:list|context:create|context:get|context:update|context:delete|projects:list|config|doctor|update] [--key=value ...]" >&2
       exit 1
       ;;
   esac

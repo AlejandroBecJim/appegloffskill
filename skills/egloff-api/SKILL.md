@@ -42,5 +42,5 @@ Cada llamada reporta: qué endpoint se llamó, el status HTTP, y los campos rele
 
 ## Referencias
 
-- `bin/egloff-api` — la CLI (wrapper de curl/jq + asistente de configuración); lee su comentario de cabecera para el uso completo.
+- `bin/egloff-api` — la CLI (wrapper de curl/jq + asistente de configuración); lee su comentario de cabecera para el uso completo. `egloff-api update` actualiza el CLI/skill instalado en el lugar (requiere `git`).
 - `references/endpoints.md` — contrato de API campo por campo (refleja `GET /api/docs`).

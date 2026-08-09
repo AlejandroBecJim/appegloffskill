@@ -51,12 +51,16 @@ alternativa/fallback y como forma de instalación inicial:
 curl -fsSL https://raw.githubusercontent.com/AlejandroBecJim/appegloffskill/main/install.sh | bash
 ```
 
-> **Limitación conocida**: `egloff-api update` en modo local solo repara
-> automáticamente los symlinks globales por defecto (`~/.local/bin/egloff-api`
-> y `~/.claude/skills/egloff-api`). Una instalación hecha solo con
-> `--project PATH` cuyo symlink de proyecto quede roto no se auto-repara
-> todavía — reinstala manualmente con `install.sh --project PATH` (seguimiento
-> en el issue #15).
+`egloff-api update` también repara automáticamente las instalaciones
+`--project PATH` registradas: cada `install.sh --project PATH` deja un
+registro en un manifiesto JSON (`{version, projects: [{path, mode,
+installed_at}]}`) en `${EGLOFF_STATE_ROOT:-<EGLOFF_INSTALL_ROOT>-state}/projects.json`
+(un directorio hermano de la instalación, nunca dentro de ella). En cada
+`egloff-api update` (modo global o local) se recorre ese manifiesto:
+symlinks de proyecto rotos o ausentes se reinstalan automáticamente, las
+rutas de proyecto que ya no existen se eliminan del manifiesto y se
+reportan, y se imprime un resumen (`Project installs: N ok, M repaired, K
+pruned`). Un manifiesto ausente o corrupto nunca hace fallar `update`.
 
 ## Configuración
 
@@ -109,7 +113,9 @@ para el contrato completo.
 
 ## Requisitos
 
-- `curl`, `jq`
+- `curl`, `jq` — `install.sh` requiere `jq` incondicionalmente (incluso sin
+  `--project`) para poder mantener el manifiesto de instalaciones por
+  proyecto
 - `git` (solo para `egloff-api update`)
 - Una instancia de app-egloff en ejecución y un token de API de Sanctum válido
 

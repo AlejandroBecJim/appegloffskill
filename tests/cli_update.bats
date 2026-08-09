@@ -410,6 +410,173 @@ hide_git_from_path() {
 }
 
 # =============================================================================
+# Phase 6: Project manifest reconciliation
+# =============================================================================
+
+@test "local update repairs broken project link" {
+  local checkout origin
+  checkout="${SANDBOX_TMP}/checkout"
+  origin="$(build_git_local_checkout "$checkout")"
+  advance_remote "$origin"
+
+  local project_dir="${SANDBOX_TMP}/my-project"
+  break_project_link "$project_dir"
+  local canon_project
+  canon_project="$(cd -P "$project_dir" && pwd)"
+  write_projects_manifest "$(manifest_entry_json "$canon_project")"
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [ -e "${project_dir}/.claude/skills/egloff-api" ]
+}
+
+@test "bootstrap update repairs broken project link" {
+  bootstrap_update_fixture
+  advance_remote "$UPD_REMOTE"
+
+  local project_dir="${SANDBOX_TMP}/my-project"
+  break_project_link "$project_dir"
+  local canon_project
+  canon_project="$(cd -P "$project_dir" && pwd)"
+  write_projects_manifest "$(manifest_entry_json "$canon_project")"
+
+  run bash "${EGLOFF_BIN_DIR}/egloff-api" update
+  [ "$status" -eq 0 ]
+  [ -e "${project_dir}/.claude/skills/egloff-api" ]
+}
+
+@test "healthy manifest entry is a no-op during update" {
+  local checkout origin
+  checkout="${SANDBOX_TMP}/checkout"
+  origin="$(build_git_local_checkout "$checkout")"
+  advance_remote "$origin"
+
+  local project_dir="${SANDBOX_TMP}/my-project"
+  mkdir -p "$project_dir"
+  run bash "$INSTALL_SH" --project "$project_dir"
+  [ "$status" -eq 0 ]
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Project installs: 1 ok, 0 repaired, 0 pruned"* ]]
+}
+
+@test "deleted project root is pruned and reported in update summary" {
+  local checkout origin
+  checkout="${SANDBOX_TMP}/checkout"
+  origin="$(build_git_local_checkout "$checkout")"
+  advance_remote "$origin"
+
+  local project_dir="${SANDBOX_TMP}/gone-project"
+  mkdir -p "$project_dir"
+  local canon_project
+  canon_project="$(cd -P "$project_dir" && pwd)"
+  write_projects_manifest "$(manifest_entry_json "$canon_project")"
+  rm -rf "$project_dir"
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"$canon_project"* ]]
+  [[ "$output" == *"Project installs: 0 ok, 0 repaired, 1 pruned"* ]]
+
+  local manifest="${EGLOFF_INSTALL_ROOT}-state/projects.json"
+  [ "$(jq -r '.projects | length' "$manifest")" = "0" ]
+}
+
+@test "absent manifest: update completes normally, no error, no reconciliation output" {
+  local checkout origin
+  checkout="${SANDBOX_TMP}/checkout"
+  origin="$(build_git_local_checkout "$checkout")"
+  advance_remote "$origin"
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Project installs:"* ]]
+}
+
+@test "corrupt manifest: update prints warning, skips reconciliation, still completes" {
+  local checkout origin
+  checkout="${SANDBOX_TMP}/checkout"
+  origin="$(build_git_local_checkout "$checkout")"
+  advance_remote "$origin"
+
+  write_projects_manifest '{not valid json'
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"warning:"* ]]
+  [[ "$output" != *"Project installs:"* ]]
+}
+
+@test "empty manifest ({version:1,projects:[]}): zero repairs, zero prunes, no error" {
+  local checkout origin
+  checkout="${SANDBOX_TMP}/checkout"
+  origin="$(build_git_local_checkout "$checkout")"
+  advance_remote "$origin"
+
+  write_projects_manifest '{"version":1,"projects":[]}'
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Project installs: 0 ok, 0 repaired, 0 pruned"* ]]
+}
+
+@test "manifest entry path containing spaces is reconciled without word-splitting errors" {
+  local checkout origin
+  checkout="${SANDBOX_TMP}/checkout"
+  origin="$(build_git_local_checkout "$checkout")"
+  advance_remote "$origin"
+
+  local project_dir="${SANDBOX_TMP}/my project with spaces"
+  break_project_link "$project_dir"
+  local canon_project
+  canon_project="$(cd -P "$project_dir" && pwd)"
+  write_projects_manifest "$(manifest_entry_json "$canon_project")"
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [ -e "${project_dir}/.claude/skills/egloff-api" ]
+}
+
+@test "manifest entry path with leading '-' and spaces is never interpreted as a flag during repair" {
+  local checkout origin
+  checkout="${SANDBOX_TMP}/checkout"
+  origin="$(build_git_local_checkout "$checkout")"
+  advance_remote "$origin"
+
+  local project_dir="${SANDBOX_TMP}/-my project"
+  mkdir -p -- "$project_dir"
+  break_project_link "$project_dir"
+  local canon_project
+  canon_project="$(cd -P -- "$project_dir" && pwd)"
+  write_projects_manifest "$(manifest_entry_json "$canon_project")"
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [ -e "${project_dir}/.claude/skills/egloff-api" ]
+}
+
+@test "update in local mode leaves git status --porcelain empty after reconciliation" {
+  local checkout origin
+  checkout="${SANDBOX_TMP}/checkout"
+  origin="$(build_git_local_checkout "$checkout")"
+  advance_remote "$origin"
+
+  local project_dir="${SANDBOX_TMP}/my-project"
+  break_project_link "$project_dir"
+  local canon_project
+  canon_project="$(cd -P "$project_dir" && pwd)"
+  write_projects_manifest "$(manifest_entry_json "$canon_project")"
+
+  run bash "${checkout}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+
+  local status_out
+  status_out="$(git -C "$checkout" status --porcelain)"
+  [ -z "$status_out" ]
+}
+
+# =============================================================================
 # Phase 7: Full-suite regression (spot check; full run happens via tests/run.sh)
 # =============================================================================
 

@@ -115,6 +115,62 @@ stub_bin() {
   export PATH="${stub_dir}:${PATH}"
 }
 
+# stub_bin_absent NAME
+# Removes NAME from PATH by shadowing every directory that provides it with
+# a directory containing symlinks to every OTHER binary in that directory —
+# so `command -v NAME` fails while every other tool bash/bats/the script
+# under test needs keeps working. Mirrors hide_git_from_path's approach,
+# generalized to any binary name.
+stub_bin_absent() {
+  local name="$1"
+  local shadow_root="${SANDBOX_TMP}/no-${name}-bin"
+  mkdir -p "$shadow_root"
+  local newpath="" dir n=0 f base shadow_dir
+  IFS=':' read -ra dirs <<< "$PATH"
+  for dir in "${dirs[@]}"; do
+    if [ -x "${dir}/${name}" ]; then
+      n=$((n + 1))
+      shadow_dir="${shadow_root}/${n}"
+      mkdir -p "$shadow_dir"
+      for f in "$dir"/*; do
+        base="$(basename "$f")"
+        [ "$base" = "$name" ] && continue
+        [ -e "$f" ] && ln -sf "$f" "${shadow_dir}/${base}"
+      done
+      newpath="${newpath:+$newpath:}${shadow_dir}"
+    else
+      newpath="${newpath:+$newpath:}$dir"
+    fi
+  done
+  export PATH="$newpath"
+}
+
+# write_projects_manifest JSON
+# Writes JSON as the projects manifest at
+# ${EGLOFF_STATE_ROOT:-${EGLOFF_INSTALL_ROOT}-state}/projects.json.
+write_projects_manifest() {
+  local json="$1"
+  local dir="${EGLOFF_STATE_ROOT:-${EGLOFF_INSTALL_ROOT}-state}"
+  mkdir -p -- "$dir"
+  printf '%s' "$json" > "${dir}/projects.json"
+}
+
+# manifest_entry_json PATH [MODE] [TIMESTAMP]
+# Prints a one-entry projects manifest JSON document.
+manifest_entry_json() {
+  local path="$1" mode="${2:-symlink}" ts="${3:-2020-01-01T00:00:00Z}"
+  jq -n --arg p "$path" --arg m "$mode" --arg t "$ts" \
+    '{version:1, projects:[{path:$p, mode:$m, installed_at:$t}]}'
+}
+
+# break_project_link PROJECT_DIR
+# Creates PROJECT_DIR/.claude/skills/egloff-api as a broken symlink.
+break_project_link() {
+  local project_dir="$1"
+  mkdir -p -- "${project_dir}/.claude/skills"
+  ln -s "/nonexistent/egloff-api" "${project_dir}/.claude/skills/egloff-api"
+}
+
 # write_cfg URL TOKEN
 # Writes a fixture ~/.config/egloff-api/config-equivalent file (honoring
 # XDG_CONFIG_HOME if set) under the sandboxed HOME, mode 0600.

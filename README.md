@@ -62,6 +62,43 @@ rutas de proyecto que ya no existen se eliminan del manifiesto y se
 reportan, y se imprime un resumen (`Project installs: N ok, M repaired, K
 pruned`). Un manifiesto ausente o corrupto nunca hace fallar `update`.
 
+## Agent registration
+
+Agents that don't scan `~/.claude/skills` (Codex, OpenCode, Gemini) would
+never see the installed skills, so `install.sh` also writes a managed block
+(skill name, trigger description and the absolute path of its installed
+`SKILL.md`) between `<!-- egloff-skills:start -->` and
+`<!-- egloff-skills:end -->` markers. The block tells the agent to read that
+`SKILL.md` whenever a request matches a trigger.
+
+- Global install: `~/.claude/CLAUDE.md` always, plus `~/.codex/AGENTS.md`,
+  `~/.config/opencode/AGENTS.md` and `~/.gemini/GEMINI.md` only when that
+  agent's config directory already exists (agent config dirs are never
+  created).
+- `--project PATH`: `PATH/CLAUDE.md` and `PATH/AGENTS.md`. These files are
+  usually committed, so entries use the relative path
+  `.claude/skills/<skill>/SKILL.md`; no absolute local path is written there
+  (global blocks do use absolute paths).
+- Content outside the markers is never touched; re-running replaces the block
+  in place (idempotent). A file with unbalanced markers is skipped with a
+  warning. Registration never fails the install.
+- `egloff-api update` regenerates the block for the global targets and every
+  project in the manifest, so skills removed from the repo drop out.
+- Opt out with `--no-register` or `EGLOFF_NO_REGISTER=1`. The choice is
+  remembered, so `egloff-api update` keeps honoring it: a global opt-out is a
+  `no-register` marker file in the state dir
+  (`${EGLOFF_STATE_ROOT:-<EGLOFF_INSTALL_ROOT>-state}`), a `--project` opt-out
+  is `"register": false` on that project's manifest entry. Re-running
+  `install.sh` without the opt-out clears it. `EGLOFF_NO_REGISTER=1` is also
+  honored directly by `update`.
+- Descriptions are copied from each `SKILL.md` frontmatter into files agents
+  load on every session (and `update` copies them from the upstream repo), so
+  they are sanitized: control characters and newlines are removed, whitespace
+  is collapsed, HTML-comment sequences (`<!--`, `-->`) are defused so a
+  description cannot forge or break the markers, and each name/description is
+  capped at 300 characters with a trailing `...`. Review upstream changes
+  to `skills/*/SKILL.md` as you would any instruction file.
+
 ## Configuración
 
 La URL de la API ya viene preconfigurada (`https://app.egloff.com.mx`) —

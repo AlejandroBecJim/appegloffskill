@@ -111,6 +111,17 @@ egloff-api context:list --search=deploy
 Consulta `skills/egloff-api/SKILL.md` y `skills/egloff-api/references/endpoints.md`
 para el contrato completo.
 
+## Otras skills incluidas
+
+Además de `egloff-api`, el repo trae skills de uso general; `install.sh` instala
+todas las que haya bajo `skills/` y `egloff-api update` las mantiene al día.
+
+- `issue-format` — formato de issues (aprobados desde el inicio, prioridad como label), para cualquier repo.
+- `pr-format` — formato de PRs (resumen, decisiones tomadas, riesgos, cómo se validó y criterios del issue
+  resueltos), para cualquier repo.
+
+Son dos skills separadas a propósito: cada una se carga solo cuando se pide crear un issue o un PR.
+
 ## Requisitos
 
 - `curl`, `jq` — `install.sh` requiere `jq` incondicionalmente (incluso sin

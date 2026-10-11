@@ -16,12 +16,17 @@ EGLOFF_INSTALL_ROOT="${EGLOFF_INSTALL_ROOT:-${HOME}/.local/share/egloff-api-skil
 EGLOFF_BIN_DIR="${EGLOFF_BIN_DIR:-${HOME}/.local/bin}"
 EGLOFF_STATE_ROOT="${EGLOFF_STATE_ROOT:-${EGLOFF_INSTALL_ROOT}-state}"
 
+# Delimiters of the managed block written into agent instruction files.
+SKILLS_BLOCK_START="<!-- egloff-skills:start -->"
+SKILLS_BLOCK_END="<!-- egloff-skills:end -->"
+
 usage() {
   cat <<'EOF'
 Usage:
   ./install.sh                    Install all skills globally (~/.claude/skills)
   ./install.sh --project PATH     Install all skills into PATH/.claude/skills
   ./install.sh --copy             Copy files instead of symlinking (default: symlink)
+  ./install.sh --no-register      Do not write the skills block into agent instruction files
   ./install.sh -h|--help          Show this help
 
 Also works piped, without cloning first:
@@ -32,6 +37,14 @@ manifest, even without --project). --project installs are tracked at
 <EGLOFF_INSTALL_ROOT>-state/projects.json by default, overridable via the
 EGLOFF_STATE_ROOT env var; 'egloff-api update' reads this manifest to
 repair or prune project installs automatically.
+
+Agent registration: after installing, a managed block listing every skill
+(name, trigger, installed SKILL.md path) is written between
+<!-- egloff-skills:start --> / <!-- egloff-skills:end --> markers into
+~/.claude/CLAUDE.md and, only when the agent's config dir already exists,
+~/.codex/AGENTS.md, ~/.config/opencode/AGENTS.md and ~/.gemini/GEMINI.md
+(--project: PATH/CLAUDE.md and PATH/AGENTS.md). Content outside the markers
+is never touched. Opt out with --no-register or EGLOFF_NO_REGISTER=1.
 EOF
 }
 
@@ -39,6 +52,14 @@ EOF
 mode="symlink"
 dest_root=""
 project_root=""
+register="yes"
+
+# Env-var opt-out (any non-empty value other than "0"); --no-register below
+# does the same per invocation.
+case "${EGLOFF_NO_REGISTER:-}" in
+  ""|0) ;;
+  *) register="no" ;;
+esac
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -49,6 +70,10 @@ while [ $# -gt 0 ]; do
       ;;
     --copy)
       mode="copy"
+      shift
+      ;;
+    --no-register)
+      register="no"
       shift
       ;;
     -h|--help)
@@ -198,14 +223,14 @@ link_cli() {
   echo "Linked ${cli_target} -> ${cli_source}"
 }
 
-# record_project_install PROJECT_ROOT MODE — upserts (path, mode,
-# installed_at) into ${EGLOFF_STATE_ROOT}/projects.json, deduped by
+# record_project_install PROJECT_ROOT MODE REGISTER — upserts (path, mode,
+# installed_at, and register:false when REGISTER is "no") into ${EGLOFF_STATE_ROOT}/projects.json, deduped by
 # canonical path. Writes atomically (mkdir -p, mktemp in the same dir under
 # a scoped umask 077, chmod 600, mv -f), mirroring bin/egloff-api's
 # write_config(). Never fails the install: on any jq/write error it warns
 # and returns 0 (the symlink/copy already succeeded).
 record_project_install() {
-  local path="$1" install_mode="$2"
+  local path="$1" install_mode="$2" reg="${3:-yes}"
   local canon_path ts existing filter tmp_file
 
   if ! canon_path="$(cd -P "$path" 2>/dev/null && pwd)"; then
@@ -230,12 +255,12 @@ record_project_install() {
     existing='{"version":1,"projects":[]}'
   fi
 
-  filter='.version=1 | .projects=(((.projects//[])|map(select(.path!=$p)))+[{path:$p,mode:$m,installed_at:$t}])'
+  filter='.version=1 | .projects=(((.projects//[])|map(select(.path!=$p)))+[({path:$p,mode:$m,installed_at:$t}+(if $r=="no" then {register:false} else {} end))])'
 
   (
     umask 077
     tmp_file="$(mktemp "${EGLOFF_STATE_ROOT}/.projects.json.XXXXXX")" || exit 1
-    if ! printf '%s' "$existing" | jq --arg p "$canon_path" --arg m "$install_mode" --arg t "$ts" "$filter" > "$tmp_file"; then
+    if ! printf '%s' "$existing" | jq --arg p "$canon_path" --arg m "$install_mode" --arg t "$ts" --arg r "$reg" "$filter" > "$tmp_file"; then
       rm -f "$tmp_file"
       exit 1
     fi
@@ -243,6 +268,220 @@ record_project_install() {
     mv -f "$tmp_file" "$manifest_file"
   ) || echo "warning: could not update project manifest at ${manifest_file}" >&2
 
+  return 0
+}
+
+# skill_frontmatter_field FILE KEY — prints the value of a top-level
+# `KEY: value` line from FILE's YAML frontmatter (the block between the
+# leading `---` lines), with one layer of surrounding single or double quotes
+# removed. Prints nothing when FILE has no frontmatter or no such key. Only
+# single-line scalar values are supported (all that SKILL.md files use here).
+skill_frontmatter_field() {
+  local file="$1" key="$2" value
+  value="$(awk -v key="$key" '
+    { sub(/\r$/, "") }
+    NR == 1 { if ($0 != "---") exit; next }
+    $0 == "---" { exit }
+    index($0, key ":") == 1 {
+      v = substr($0, length(key) + 2)
+      sub(/^[ \t]+/, "", v)
+      sub(/[ \t]+$/, "", v)
+      print v
+      exit
+    }
+  ' "$file" 2>/dev/null)" || value=""
+
+  case "$value" in
+    \"?*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      value="${value//\\\"/\"}"
+      ;;
+    \'?*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      value="${value//\'\'/\'}"
+      ;;
+  esac
+  printf '%s' "$value"
+}
+
+# sanitize_block_text VALUE — prints VALUE made safe for the always-loaded
+# instruction files: control characters and newlines dropped/turned into
+# spaces, whitespace runs collapsed, HTML-comment delimiters defused (so a
+# description can never forge or break the block markers) and the result
+# capped at 300 characters with a trailing "...".
+sanitize_block_text() {
+  local v
+  v="$(printf '%s' "$1" | tr '\n\r\t' '   ' | tr -d '\000-\010\013\014\016-\037\177' | tr -s ' ')"
+  v="${v# }"
+  v="${v% }"
+  while [[ "$v" == *"<!--"* || "$v" == *"-->"* ]]; do
+    v="${v//<!--/< !--}"
+    v="${v//-->/-- >}"
+  done
+  if [ "${#v}" -gt 300 ]; then
+    v="${v:0:297}..."
+  fi
+  printf '%s' "$v"
+}
+
+# build_skills_block SOURCE_DIR DEST_ROOT — prints the managed block (markers
+# included, no trailing newline) listing every skill under SOURCE_DIR/skills/
+# with its sanitized frontmatter name + description and the INSTALLED path
+# DEST_ROOT/<skill>/SKILL.md (absolute for global installs, relative to the
+# project root for --project so no local path leaks into a shared file). The block is rebuilt from scratch every time,
+# so a skill removed from skills/ simply disappears from it.
+build_skills_block() {
+  local source_dir="$1" dest_root="$2"
+  local skill_name skill_md name desc
+
+  printf '%s\n' "$SKILLS_BLOCK_START"
+  printf '%s\n' "## Egloff skills (managed by egloff-api — do not edit between the markers)"
+  printf '\n'
+  printf '%s\n' "When a request matches a skill trigger below, read that SKILL.md before answering."
+  printf '\n'
+  while IFS= read -r skill_name; do
+    [ -n "$skill_name" ] || continue
+    skill_md="${source_dir}/skills/${skill_name}/SKILL.md"
+    name="$(sanitize_block_text "$(skill_frontmatter_field "$skill_md" name)")"
+    desc="$(sanitize_block_text "$(skill_frontmatter_field "$skill_md" description)")"
+    printf -- '- **%s**' "${name:-$skill_name}"
+    [ -n "$desc" ] && printf ' — %s' "$desc"
+    printf '\n'
+    printf '  SKILL.md: %s/%s/SKILL.md\n' "$dest_root" "$skill_name"
+  done <<< "$(discover_skills "$source_dir")"
+  printf '%s' "$SKILLS_BLOCK_END"
+}
+
+# write_managed_block FILE BLOCK — replaces the marker-delimited block in
+# FILE in place, or appends it when absent (creating FILE if needed). Bytes
+# outside the markers are preserved exactly; a symlinked FILE is written
+# through to its target; the file mode is kept. Atomic: mktemp in the same
+# dir + mv -f. A lone/duplicated/out-of-order marker, or any I/O problem,
+# warns on stderr, leaves FILE untouched and returns 1.
+write_managed_block() {
+  local file="$1" block="$2"
+  local target="$file" hop=0 link dir content="" new before after rest tmp_file
+
+  # Resolve symlinks (dotfile managers often link CLAUDE.md) so mv replaces
+  # the real file instead of clobbering the link. Capped as a cycle guard.
+  while [ -L "$target" ]; do
+    hop=$((hop + 1))
+    if [ "$hop" -gt 40 ]; then
+      echo "warning: too many symlink hops resolving ${file} — skipping agent registration there" >&2
+      return 1
+    fi
+    link="$(readlink "$target")"
+    case "$link" in
+      /*) target="$link" ;;
+      *) target="$(dirname "$target")/${link}" ;;
+    esac
+  done
+
+  dir="$(dirname "$target")"
+  if [ -e "$target" ]; then
+    if [ ! -f "$target" ] || ! content="$(cat -- "$target"; printf x)"; then
+      echo "warning: cannot read ${file} as a regular file — skipping agent registration there" >&2
+      return 1
+    fi
+    content="${content%x}"
+  fi
+
+  if [[ "$content" == *"$SKILLS_BLOCK_START"* || "$content" == *"$SKILLS_BLOCK_END"* ]]; then
+    before="${content%%"$SKILLS_BLOCK_START"*}"
+    after="${content#*"$SKILLS_BLOCK_START"}"
+    rest="${after#*"$SKILLS_BLOCK_END"}"
+    if [[ "$content" != *"$SKILLS_BLOCK_START"* || "$after" != *"$SKILLS_BLOCK_END"* \
+       || "${after%%"$SKILLS_BLOCK_END"*}" == *"$SKILLS_BLOCK_START"* \
+       || "$rest" == *"$SKILLS_BLOCK_START"* || "$rest" == *"$SKILLS_BLOCK_END"* ]]; then
+      echo "warning: ${file} has unbalanced egloff-skills markers — leaving it untouched; fix or remove them and re-run" >&2
+      return 1
+    fi
+    new="${before}${block}${rest}"
+  elif [ -z "$content" ]; then
+    new="${block}"$'\n'
+  else
+    [ "${content%$'\n'}" = "$content" ] && content="${content}"$'\n'
+    new="${content}"$'\n'"${block}"$'\n'
+  fi
+
+  if [ -f "$target" ] && [ "$new" = "$content" ]; then
+    return 0
+  fi
+
+  if ! mkdir -p "$dir" 2>/dev/null \
+    || ! tmp_file="$(mktemp "${dir}/.egloff-skills.XXXXXX" 2>/dev/null)"; then
+    echo "warning: cannot write to ${dir} — skipping agent registration for ${file}" >&2
+    return 1
+  fi
+  # cp -p seeds the temp file with the original mode; new files get 0644.
+  if { if [ -f "$target" ]; then cp -p "$target" "$tmp_file"; else chmod 644 "$tmp_file"; fi; } \
+    && printf '%s' "$new" > "$tmp_file" \
+    && mv -f "$tmp_file" "$target"; then
+    return 0
+  fi
+  rm -f "$tmp_file"
+  echo "warning: could not update ${file} — skipping agent registration there" >&2
+  return 1
+}
+
+# register_skills SOURCE_DIR DEST_ROOT PROJECT_ROOT — writes the managed
+# skills block into every agent instruction file that applies. Global
+# (PROJECT_ROOT empty): ~/.claude/CLAUDE.md always, plus ~/.codex/AGENTS.md,
+# ~/.config/opencode/AGENTS.md and ~/.gemini/GEMINI.md only when that
+# agent's config dir already exists (an agent we never create the dir for).
+# Project: PROJECT_ROOT/CLAUDE.md and PROJECT_ROOT/AGENTS.md. Never fails
+# the install: every problem is a warning.
+register_skills() {
+  local source_dir="$1" dest_root="$2" proj="$3"
+  local targets=() block file updated=()
+
+  if [ -n "$proj" ]; then
+    targets=("${proj}/CLAUDE.md" "${proj}/AGENTS.md")
+  else
+    targets=("${HOME}/.claude/CLAUDE.md")
+    [ -d "${HOME}/.codex" ] && targets+=("${HOME}/.codex/AGENTS.md")
+    [ -d "${HOME}/.config/opencode" ] && targets+=("${HOME}/.config/opencode/AGENTS.md")
+    [ -d "${HOME}/.gemini" ] && targets+=("${HOME}/.gemini/GEMINI.md")
+  fi
+
+  if [ -z "$(discover_skills "$source_dir")" ]; then
+    return 0
+  fi
+  block="$(build_skills_block "$source_dir" "$dest_root")" || {
+    echo "warning: could not build the skills block — skipping agent registration" >&2
+    return 0
+  }
+
+  for file in "${targets[@]}"; do
+    if write_managed_block "$file" "$block"; then
+      updated+=("$file")
+    fi
+  done
+
+  if [ "${#updated[@]}" -gt 0 ]; then
+    echo "Registered skills for agents in:"
+    for file in "${updated[@]}"; do
+      echo "  ${file}"
+    done
+  fi
+  return 0
+}
+
+# record_register_pref REGISTER — remembers a global opt-out as the marker
+# file ${EGLOFF_STATE_ROOT}/no-register (created for "no", removed otherwise)
+# so 'egloff-api update' keeps honoring it. Per-project opt-outs live in the
+# manifest instead (record_project_install). Never fails the install.
+record_register_pref() {
+  local marker="${EGLOFF_STATE_ROOT}/no-register"
+  if [ "$1" = "no" ]; then
+    if ! { mkdir -p "$EGLOFF_STATE_ROOT" && : > "$marker"; } 2>/dev/null; then
+      echo "warning: could not record the --no-register preference at ${marker}" >&2
+    fi
+  else
+    rm -f "$marker" 2>/dev/null || true
+  fi
   return 0
 }
 
@@ -290,7 +529,26 @@ else
 fi
 
 if [ -n "$project_root" ]; then
-  record_project_install "$project_root" "$mode"
+  record_project_install "$project_root" "$mode" "$register"
+else
+  record_register_pref "$register"
+fi
+
+if [ "$register" = "yes" ]; then
+  reg_project=""
+  reg_dest="$dest_root"
+  if [ -n "$project_root" ]; then
+    if reg_project="$(cd -P "$project_root" 2>/dev/null && pwd)"; then
+      reg_dest=".claude/skills"
+    else
+      echo "warning: could not canonicalize project path '${project_root}' — skipping agent registration" >&2
+      reg_project=""
+      register="no"
+    fi
+  fi
+  if [ "$register" = "yes" ]; then
+    register_skills "$SOURCE_DIR" "$reg_dest" "$reg_project" || true
+  fi
 fi
 
 link_cli "$SOURCE_DIR" "$EGLOFF_BIN_DIR" "$resolved_mode"

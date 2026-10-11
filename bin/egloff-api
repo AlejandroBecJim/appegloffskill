@@ -444,6 +444,12 @@ _upd_state_manifest_path() {
   printf '%s/projects.json' "$state_root"
 }
 
+# Prints the path of the global registration opt-out marker written by
+# install.sh's record_register_pref() (next to the projects manifest).
+_upd_register_marker_path() {
+  printf '%s/no-register' "$(dirname "$(_upd_state_manifest_path)")"
+}
+
 # _upd_discover_skills SOURCE_DIR — prints one skill name per line for every
 # directory under SOURCE_DIR/skills/. Duplicated (not shared) from
 # install.sh's discover_skills() per design: install.sh must remain a single
@@ -502,9 +508,9 @@ _upd_reconcile_projects() {
   local ok=0 repaired=0 pruned=0
   local pruned_paths=()
   local path mode link install_args repair_out repair_status
-  local name unhealthy
+  local name unhealthy reg
 
-  while IFS= read -r -d '' path && IFS= read -r -d '' mode; do
+  while IFS= read -r -d '' path && IFS= read -r -d '' mode && IFS= read -r -d '' reg; do
     if [ ! -e "$path" ]; then
       pruned=$((pruned + 1))
       pruned_paths+=("$path")
@@ -525,6 +531,8 @@ _upd_reconcile_projects() {
     if [ "$unhealthy" -eq 1 ]; then
       install_args=(--project "$path")
       [ "$mode" = "copy" ] && install_args+=(--copy)
+      # Keep a recorded opt-out: a plain repair would clear register:false.
+      [ "$reg" = "no" ] && install_args+=(--no-register)
       if repair_out="$(bash "${root}/install.sh" "${install_args[@]}" 2>&1)"; then
         repaired=$((repaired + 1))
       else
@@ -535,7 +543,7 @@ _upd_reconcile_projects() {
     else
       ok=$((ok + 1))
     fi
-  done < <(jq -j '.projects[]? | (.path, .mode) | . + "\u0000"' "$manifest_file" 2>/dev/null)
+  done < <(jq -j '.projects[]? | (.path, .mode, (if .register == false then "no" else "yes" end)) | . + "\u0000"' "$manifest_file" 2>/dev/null)
 
   if [ "$pruned" -gt 0 ]; then
     local jq_args=() filter='.version=1 | .projects //= []'
@@ -610,14 +618,255 @@ _upd_report_orphan_skills() {
   done
 }
 
+_UPD_BLOCK_START="<!-- egloff-skills:start -->"
+_UPD_BLOCK_END="<!-- egloff-skills:end -->"
+
+# _upd_frontmatter_field FILE KEY — prints the value of a top-level
+# `KEY: value` line from FILE's YAML frontmatter (the block between the
+# leading `---` lines), with one layer of surrounding single or double quotes
+# removed. Prints nothing when FILE has no frontmatter or no such key. Only
+# single-line scalar values are supported (all that SKILL.md files use here).
+_upd_frontmatter_field() {
+  local file="$1" key="$2" value
+  value="$(awk -v key="$key" '
+    { sub(/\r$/, "") }
+    NR == 1 { if ($0 != "---") exit; next }
+    $0 == "---" { exit }
+    index($0, key ":") == 1 {
+      v = substr($0, length(key) + 2)
+      sub(/^[ \t]+/, "", v)
+      sub(/[ \t]+$/, "", v)
+      print v
+      exit
+    }
+  ' "$file" 2>/dev/null)" || value=""
+
+  case "$value" in
+    \"?*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      value="${value//\\\"/\"}"
+      ;;
+    \'?*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      value="${value//\'\'/\'}"
+      ;;
+  esac
+  printf '%s' "$value"
+}
+
+# Duplicated (not shared) from install.sh per design — it must remain a
+# single self-contained file runnable via curl | bash.
+#
+# _upd_sanitize_block_text VALUE — prints VALUE made safe for the always-loaded
+# instruction files: control characters and newlines dropped/turned into
+# spaces, whitespace runs collapsed, HTML-comment delimiters defused (so a
+# description can never forge or break the block markers) and the result
+# capped at 300 characters with a trailing "...".
+_upd_sanitize_block_text() {
+  local v
+  v="$(printf '%s' "$1" | tr '\n\r\t' '   ' | tr -d '\000-\010\013\014\016-\037\177' | tr -s ' ')"
+  v="${v# }"
+  v="${v% }"
+  while [[ "$v" == *"<!--"* || "$v" == *"-->"* ]]; do
+    v="${v//<!--/< !--}"
+    v="${v//-->/-- >}"
+  done
+  if [ "${#v}" -gt 300 ]; then
+    v="${v:0:297}..."
+  fi
+  printf '%s' "$v"
+}
+
+# _upd_build_skills_block SOURCE_DIR DEST_ROOT — prints the managed block (markers
+# included, no trailing newline) listing every skill under SOURCE_DIR/skills/
+# with its sanitized frontmatter name + description and the INSTALLED path
+# DEST_ROOT/<skill>/SKILL.md (absolute for global installs, relative to the
+# project root for --project so no local path leaks into a shared file). The block is rebuilt from scratch every time,
+# so a skill removed from skills/ simply disappears from it.
+_upd_build_skills_block() {
+  local source_dir="$1" dest_root="$2"
+  local skill_name skill_md name desc
+
+  printf '%s\n' "$_UPD_BLOCK_START"
+  printf '%s\n' "## Egloff skills (managed by egloff-api — do not edit between the markers)"
+  printf '\n'
+  printf '%s\n' "When a request matches a skill trigger below, read that SKILL.md before answering."
+  printf '\n'
+  while IFS= read -r skill_name; do
+    [ -n "$skill_name" ] || continue
+    skill_md="${source_dir}/skills/${skill_name}/SKILL.md"
+    name="$(_upd_sanitize_block_text "$(_upd_frontmatter_field "$skill_md" name)")"
+    desc="$(_upd_sanitize_block_text "$(_upd_frontmatter_field "$skill_md" description)")"
+    printf -- '- **%s**' "${name:-$skill_name}"
+    [ -n "$desc" ] && printf ' — %s' "$desc"
+    printf '\n'
+    printf '  SKILL.md: %s/%s/SKILL.md\n' "$dest_root" "$skill_name"
+  done <<< "$(_upd_discover_skills "$source_dir")"
+  printf '%s' "$_UPD_BLOCK_END"
+}
+
+# _upd_write_managed_block FILE BLOCK — replaces the marker-delimited block in
+# FILE in place, or appends it when absent (creating FILE if needed). Bytes
+# outside the markers are preserved exactly; a symlinked FILE is written
+# through to its target; the file mode is kept. Atomic: mktemp in the same
+# dir + mv -f. A lone/duplicated/out-of-order marker, or any I/O problem,
+# warns on stderr, leaves FILE untouched and returns 1.
+_upd_write_managed_block() {
+  local file="$1" block="$2"
+  local target="$file" hop=0 link dir content="" new before after rest tmp_file
+
+  # Resolve symlinks (dotfile managers often link CLAUDE.md) so mv replaces
+  # the real file instead of clobbering the link. Capped as a cycle guard.
+  while [ -L "$target" ]; do
+    hop=$((hop + 1))
+    if [ "$hop" -gt 40 ]; then
+      echo "warning: too many symlink hops resolving ${file} — skipping agent registration there" >&2
+      return 1
+    fi
+    link="$(readlink "$target")"
+    case "$link" in
+      /*) target="$link" ;;
+      *) target="$(dirname "$target")/${link}" ;;
+    esac
+  done
+
+  dir="$(dirname "$target")"
+  if [ -e "$target" ]; then
+    if [ ! -f "$target" ] || ! content="$(cat -- "$target"; printf x)"; then
+      echo "warning: cannot read ${file} as a regular file — skipping agent registration there" >&2
+      return 1
+    fi
+    content="${content%x}"
+  fi
+
+  if [[ "$content" == *"$_UPD_BLOCK_START"* || "$content" == *"$_UPD_BLOCK_END"* ]]; then
+    before="${content%%"$_UPD_BLOCK_START"*}"
+    after="${content#*"$_UPD_BLOCK_START"}"
+    rest="${after#*"$_UPD_BLOCK_END"}"
+    if [[ "$content" != *"$_UPD_BLOCK_START"* || "$after" != *"$_UPD_BLOCK_END"* \
+       || "${after%%"$_UPD_BLOCK_END"*}" == *"$_UPD_BLOCK_START"* \
+       || "$rest" == *"$_UPD_BLOCK_START"* || "$rest" == *"$_UPD_BLOCK_END"* ]]; then
+      echo "warning: ${file} has unbalanced egloff-skills markers — leaving it untouched; fix or remove them and re-run" >&2
+      return 1
+    fi
+    new="${before}${block}${rest}"
+  elif [ -z "$content" ]; then
+    new="${block}"$'\n'
+  else
+    [ "${content%$'\n'}" = "$content" ] && content="${content}"$'\n'
+    new="${content}"$'\n'"${block}"$'\n'
+  fi
+
+  if [ -f "$target" ] && [ "$new" = "$content" ]; then
+    return 0
+  fi
+
+  if ! mkdir -p "$dir" 2>/dev/null \
+    || ! tmp_file="$(mktemp "${dir}/.egloff-skills.XXXXXX" 2>/dev/null)"; then
+    echo "warning: cannot write to ${dir} — skipping agent registration for ${file}" >&2
+    return 1
+  fi
+  # cp -p seeds the temp file with the original mode; new files get 0644.
+  if { if [ -f "$target" ]; then cp -p "$target" "$tmp_file"; else chmod 644 "$tmp_file"; fi; } \
+    && printf '%s' "$new" > "$tmp_file" \
+    && mv -f "$tmp_file" "$target"; then
+    return 0
+  fi
+  rm -f "$tmp_file"
+  echo "warning: could not update ${file} — skipping agent registration there" >&2
+  return 1
+}
+
+# _upd_register_agents ROOT — regenerates the managed skills block (see
+# install.sh's register_skills()) in every agent instruction file it covers:
+# the global targets and every manifest project that still exists. Because
+# the whole block is rebuilt, skills removed from skills/ drop out of it.
+# Global targets are only touched when there is evidence of a global install
+# (some skill already present under ~/.claude/skills, or a managed block
+# already in place) so a --project-only user is never promoted to a global
+# registration. Respects EGLOFF_NO_REGISTER. Never aborts update.
+_upd_register_agents() {
+  local root="$1"
+  case "${EGLOFF_NO_REGISTER:-}" in
+    ""|0) ;;
+    *) return 0 ;;
+  esac
+
+  local skill_names name
+  skill_names="$(_upd_discover_skills "$root")"
+  [ -n "$skill_names" ] || return 0
+
+  # A global opt-out recorded by install.sh --no-register skips only the
+  # global targets; manifest projects carry their own register flag.
+  local global_opted_out=0
+  [ -e "$(_upd_register_marker_path)" ] && global_opted_out=1
+
+  local count=0 block file
+  local global_dest="${HOME}/.claude/skills"
+  local targets=("${HOME}/.claude/CLAUDE.md")
+  [ -d "${HOME}/.codex" ] && targets+=("${HOME}/.codex/AGENTS.md")
+  [ -d "${HOME}/.config/opencode" ] && targets+=("${HOME}/.config/opencode/AGENTS.md")
+  [ -d "${HOME}/.gemini" ] && targets+=("${HOME}/.gemini/GEMINI.md")
+
+  local has_global=0
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if [ -e "${global_dest}/${name}" ] || [ -L "${global_dest}/${name}" ]; then
+      has_global=1
+      break
+    fi
+  done <<< "$skill_names"
+  if [ "$has_global" -eq 0 ]; then
+    for file in "${targets[@]}"; do
+      if [ -f "$file" ] && grep -qF "$_UPD_BLOCK_START" "$file" 2>/dev/null; then
+        has_global=1
+        break
+      fi
+    done
+  fi
+
+  if [ "$has_global" -eq 1 ] && [ "$global_opted_out" -eq 0 ]; then
+    block="$(_upd_build_skills_block "$root" "$global_dest")" || return 0
+    for file in "${targets[@]}"; do
+      if _upd_write_managed_block "$file" "$block"; then
+        count=$((count + 1))
+      fi
+    done
+  fi
+
+  local manifest_file proj_path proj_reg
+  manifest_file="$(_upd_state_manifest_path)"
+  if [ -f "$manifest_file" ] && jq -e . "$manifest_file" >/dev/null 2>&1; then
+    while IFS= read -r -d '' proj_path && IFS= read -r -d '' proj_reg; do
+      [ -n "$proj_path" ] && [ -d "$proj_path" ] || continue
+      [ "$proj_reg" = "no" ] && continue
+      block="$(_upd_build_skills_block "$root" ".claude/skills")" || continue
+      for file in "${proj_path}/CLAUDE.md" "${proj_path}/AGENTS.md"; do
+        if _upd_write_managed_block "$file" "$block"; then
+          count=$((count + 1))
+        fi
+      done
+    done < <(jq -j '.projects[]? | (.path, (if .register == false then "no" else "yes" end)) | . + "\u0000"' "$manifest_file" 2>/dev/null)
+  fi
+
+  if [ "$count" -gt 0 ]; then
+    echo "Agent registration: ${count} instruction file(s) refreshed"
+  fi
+  return 0
+}
+
 # _upd_post_update_hook ROOT — runs after a successful update in both
 # bootstrap and local mode: repairs the managed global symlinks if broken,
-# reconciles per-project installs from the manifest, then reports (never
-# deletes) any installed skill no longer present in the source repo.
+# reconciles per-project installs from the manifest, refreshes the managed
+# skills block in agent instruction files, then reports (never deletes) any
+# installed skill no longer present in the source repo.
 _upd_post_update_hook() {
   local root="$1"
   _upd_relink_if_needed "$root"
   _upd_reconcile_projects "$root"
+  _upd_register_agents "$root"
   _upd_report_orphan_skills "$root"
 }
 
@@ -680,7 +929,9 @@ _upd_relink_if_needed() {
   fi
 
   if [ "$needs_relink" -eq 1 ]; then
-    bash "${root}/install.sh"
+    local reg_args=()
+    [ -e "$(_upd_register_marker_path)" ] && reg_args=(--no-register)
+    bash "${root}/install.sh" ${reg_args[@]+"${reg_args[@]}"}
   fi
 }
 
@@ -697,7 +948,9 @@ _upd_update_bootstrap() {
   before="$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
   tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/egloff-api-update.XXXXXX")"
-  ( cd "$tmpdir" && bash -s -- ) < "${root}/install.sh" || status_code=$?
+  local reg_args=()
+  [ -e "$(_upd_register_marker_path)" ] && reg_args=(--no-register)
+  ( cd "$tmpdir" && bash -s -- ${reg_args[@]+"${reg_args[@]}"} ) < "${root}/install.sh" || status_code=$?
   rm -rf "$tmpdir"
 
   if [ "$status_code" -ne 0 ]; then

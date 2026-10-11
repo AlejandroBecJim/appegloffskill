@@ -45,6 +45,12 @@ Agent registration: after installing, a managed block listing every skill
 ~/.codex/AGENTS.md, ~/.config/opencode/AGENTS.md and ~/.gemini/GEMINI.md
 (--project: PATH/CLAUDE.md and PATH/AGENTS.md). Content outside the markers
 is never touched. Opt out with --no-register or EGLOFF_NO_REGISTER=1.
+
+Antigravity: it does not read those files, so the installed skills/ dir
+(absolute path) is also merged into the entries of a skills.json:
+~/.gemini/config/skills.json when ~/.gemini exists (--project:
+PATH/.agents/skills.json). Existing entries and keys are kept; the same
+opt-outs apply.
 EOF
 }
 
@@ -426,16 +432,83 @@ write_managed_block() {
   return 1
 }
 
+# write_skills_json FILE SKILLS_DIR — makes sure the Antigravity skills.json
+# FILE has an `entries` item whose `path` is SKILLS_DIR (absolute), merging
+# into whatever the file already holds (other entries and keys are kept).
+# Creates FILE (and its dir) when missing. Idempotent: an existing entry
+# leaves the file untouched (not rewritten). A symlinked FILE is written
+# through, the mode is kept, the write is atomic (mktemp in the same dir +
+# mv -f). A file that is not a JSON object, or whose `entries` is not an
+# array, warns on stderr, is left untouched and returns 1.
+write_skills_json() {
+  local file="$1" skills_dir="$2"
+  local target="$file" hop=0 link dir new tmp_file
+
+  while [ -L "$target" ]; do
+    hop=$((hop + 1))
+    if [ "$hop" -gt 40 ]; then
+      echo "warning: too many symlink hops resolving ${file} — skipping Antigravity registration there" >&2
+      return 1
+    fi
+    link="$(readlink "$target")"
+    case "$link" in
+      /*) target="$link" ;;
+      *) target="$(dirname "$target")/${link}" ;;
+    esac
+  done
+
+  dir="$(dirname "$target")"
+  if [ -e "$target" ]; then
+    if [ ! -f "$target" ] || ! jq -e 'type == "object" and ((has("entries") | not) or (.entries | type == "array"))' "$target" >/dev/null 2>&1; then
+      echo "warning: ${file} is not a JSON object with an entries array — leaving it untouched; fix it and re-run" >&2
+      return 1
+    fi
+    if jq -e --arg p "$skills_dir" '(.entries // []) | any(type == "object" and .path == $p)' "$target" >/dev/null 2>&1; then
+      return 0
+    fi
+    new="$(jq --arg p "$skills_dir" '.entries = ((.entries // []) + [{path: $p}])' "$target" 2>/dev/null)" || new=""
+  else
+    new="$(jq -n --arg p "$skills_dir" '{entries: [{path: $p}]}' 2>/dev/null)" || new=""
+  fi
+  if [ -z "$new" ]; then
+    echo "warning: could not build ${file} — skipping Antigravity registration there" >&2
+    return 1
+  fi
+
+  if ! mkdir -p "$dir" 2>/dev/null \
+    || ! tmp_file="$(mktemp "${dir}/.egloff-skills.XXXXXX" 2>/dev/null)"; then
+    echo "warning: cannot write to ${dir} — skipping Antigravity registration for ${file}" >&2
+    return 1
+  fi
+  # cp -p seeds the temp file with the original mode; new files get 0644.
+  if { if [ -f "$target" ]; then cp -p "$target" "$tmp_file"; else chmod 644 "$tmp_file"; fi; } \
+    && printf '%s\n' "$new" > "$tmp_file" \
+    && mv -f "$tmp_file" "$target"; then
+    return 0
+  fi
+  rm -f "$tmp_file"
+  echo "warning: could not update ${file} — skipping Antigravity registration there" >&2
+  return 1
+}
+
 # register_skills SOURCE_DIR DEST_ROOT PROJECT_ROOT — writes the managed
 # skills block into every agent instruction file that applies. Global
 # (PROJECT_ROOT empty): ~/.claude/CLAUDE.md always, plus ~/.codex/AGENTS.md,
 # ~/.config/opencode/AGENTS.md and ~/.gemini/GEMINI.md only when that
 # agent's config dir already exists (an agent we never create the dir for).
-# Project: PROJECT_ROOT/CLAUDE.md and PROJECT_ROOT/AGENTS.md. Never fails
-# the install: every problem is a warning.
+# Project: PROJECT_ROOT/CLAUDE.md and PROJECT_ROOT/AGENTS.md. Also merges the
+# SOURCE_DIR/skills entry into Antigravity's skills.json (global:
+# ~/.gemini/config/skills.json when ~/.gemini exists; project:
+# PROJECT_ROOT/.agents/skills.json). Never fails the install: every problem
+# is a warning.
 register_skills() {
   local source_dir="$1" dest_root="$2" proj="$3"
-  local targets=() block file updated=()
+  local targets=() json_targets=() block file updated=() skills_dir=""
+
+  # Same canonical form `egloff-api update` computes (cd -P), so the
+  # skills.json entry written here and the one update checks are identical
+  # even when the install root is reached via a symlink or trailing slash.
+  skills_dir="$(cd -P "$source_dir" 2>/dev/null && pwd)" || skills_dir=""
 
   if [ -n "$proj" ]; then
     targets=("${proj}/CLAUDE.md" "${proj}/AGENTS.md")
@@ -449,13 +522,30 @@ register_skills() {
   if [ -z "$(discover_skills "$source_dir")" ]; then
     return 0
   fi
-  block="$(build_skills_block "$source_dir" "$dest_root")" || {
+  if block="$(build_skills_block "$source_dir" "$dest_root")"; then
+    for file in "${targets[@]}"; do
+      if write_managed_block "$file" "$block"; then
+        updated+=("$file")
+      fi
+    done
+  else
     echo "warning: could not build the skills block — skipping agent registration" >&2
-    return 0
-  }
+  fi
 
-  for file in "${targets[@]}"; do
-    if write_managed_block "$file" "$block"; then
+  # Antigravity ignores the instruction files: it loads skills from the
+  # entries of a skills.json, so point it at the installed skills/ dir.
+  if [ -n "$proj" ]; then
+    json_targets=("${proj}/.agents/skills.json")
+  elif [ -d "${HOME}/.gemini" ]; then
+    json_targets=("${HOME}/.gemini/config/skills.json")
+  fi
+  if [ -z "$skills_dir" ]; then
+    echo "warning: could not canonicalize ${source_dir} — skipping Antigravity registration" >&2
+    json_targets=()
+  fi
+  # ${arr[@]+...} keeps an empty array safe under `set -u` on bash 3.2.
+  for file in ${json_targets[@]+"${json_targets[@]}"}; do
+    if write_skills_json "$file" "${skills_dir}/skills"; then
       updated+=("$file")
     fi
   done

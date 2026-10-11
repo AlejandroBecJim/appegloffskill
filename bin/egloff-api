@@ -779,6 +779,65 @@ _upd_write_managed_block() {
   return 1
 }
 
+# _upd_write_skills_json FILE SKILLS_DIR — makes sure the Antigravity skills.json
+# FILE has an `entries` item whose `path` is SKILLS_DIR (absolute), merging
+# into whatever the file already holds (other entries and keys are kept).
+# Creates FILE (and its dir) when missing. Idempotent: an existing entry
+# leaves the file untouched (not rewritten). A symlinked FILE is written
+# through, the mode is kept, the write is atomic (mktemp in the same dir +
+# mv -f). A file that is not a JSON object, or whose `entries` is not an
+# array, warns on stderr, is left untouched and returns 1.
+_upd_write_skills_json() {
+  local file="$1" skills_dir="$2"
+  local target="$file" hop=0 link dir new tmp_file
+
+  while [ -L "$target" ]; do
+    hop=$((hop + 1))
+    if [ "$hop" -gt 40 ]; then
+      echo "warning: too many symlink hops resolving ${file} — skipping Antigravity registration there" >&2
+      return 1
+    fi
+    link="$(readlink "$target")"
+    case "$link" in
+      /*) target="$link" ;;
+      *) target="$(dirname "$target")/${link}" ;;
+    esac
+  done
+
+  dir="$(dirname "$target")"
+  if [ -e "$target" ]; then
+    if [ ! -f "$target" ] || ! jq -e 'type == "object" and ((has("entries") | not) or (.entries | type == "array"))' "$target" >/dev/null 2>&1; then
+      echo "warning: ${file} is not a JSON object with an entries array — leaving it untouched; fix it and re-run" >&2
+      return 1
+    fi
+    if jq -e --arg p "$skills_dir" '(.entries // []) | any(type == "object" and .path == $p)' "$target" >/dev/null 2>&1; then
+      return 0
+    fi
+    new="$(jq --arg p "$skills_dir" '.entries = ((.entries // []) + [{path: $p}])' "$target" 2>/dev/null)" || new=""
+  else
+    new="$(jq -n --arg p "$skills_dir" '{entries: [{path: $p}]}' 2>/dev/null)" || new=""
+  fi
+  if [ -z "$new" ]; then
+    echo "warning: could not build ${file} — skipping Antigravity registration there" >&2
+    return 1
+  fi
+
+  if ! mkdir -p "$dir" 2>/dev/null \
+    || ! tmp_file="$(mktemp "${dir}/.egloff-skills.XXXXXX" 2>/dev/null)"; then
+    echo "warning: cannot write to ${dir} — skipping Antigravity registration for ${file}" >&2
+    return 1
+  fi
+  # cp -p seeds the temp file with the original mode; new files get 0644.
+  if { if [ -f "$target" ]; then cp -p "$target" "$tmp_file"; else chmod 644 "$tmp_file"; fi; } \
+    && printf '%s\n' "$new" > "$tmp_file" \
+    && mv -f "$tmp_file" "$target"; then
+    return 0
+  fi
+  rm -f "$tmp_file"
+  echo "warning: could not update ${file} — skipping Antigravity registration there" >&2
+  return 1
+}
+
 # _upd_register_agents ROOT — regenerates the managed skills block (see
 # install.sh's register_skills()) in every agent instruction file it covers:
 # the global targets and every manifest project that still exists. Because
@@ -786,7 +845,10 @@ _upd_write_managed_block() {
 # Global targets are only touched when there is evidence of a global install
 # (some skill already present under ~/.claude/skills, or a managed block
 # already in place) so a --project-only user is never promoted to a global
-# registration. Respects EGLOFF_NO_REGISTER. Never aborts update.
+# registration. Also re-merges the skills/ dir into Antigravity's skills.json
+# (~/.gemini/config/skills.json when ~/.gemini exists; PROJECT/.agents/
+# skills.json per manifest project) under the same gating and opt-outs.
+# Respects EGLOFF_NO_REGISTER. Never aborts update.
 _upd_register_agents() {
   local root="$1"
   case "${EGLOFF_NO_REGISTER:-}" in
@@ -803,7 +865,13 @@ _upd_register_agents() {
   local global_opted_out=0
   [ -e "$(_upd_register_marker_path)" ] && global_opted_out=1
 
-  local count=0 block file
+  local count=0 block file skills_dir
+  # Canonical skills dir; when it cannot be resolved the skills.json writes
+  # are skipped rather than registering a bogus "/skills" entry.
+  local canon_root=""
+  canon_root="$(cd -P "$root" 2>/dev/null && pwd)" || canon_root=""
+  skills_dir=""
+  [ -n "$canon_root" ] && skills_dir="${canon_root}/skills"
   local global_dest="${HOME}/.claude/skills"
   local targets=("${HOME}/.claude/CLAUDE.md")
   [ -d "${HOME}/.codex" ] && targets+=("${HOME}/.codex/AGENTS.md")
@@ -834,6 +902,10 @@ _upd_register_agents() {
         count=$((count + 1))
       fi
     done
+    if [ -d "${HOME}/.gemini" ] && [ -n "$skills_dir" ] \
+      && _upd_write_skills_json "${HOME}/.gemini/config/skills.json" "$skills_dir"; then
+      count=$((count + 1))
+    fi
   fi
 
   local manifest_file proj_path proj_reg
@@ -848,11 +920,15 @@ _upd_register_agents() {
           count=$((count + 1))
         fi
       done
+      if [ -n "$skills_dir" ] \
+        && _upd_write_skills_json "${proj_path}/.agents/skills.json" "$skills_dir"; then
+        count=$((count + 1))
+      fi
     done < <(jq -j '.projects[]? | (.path, (if .register == false then "no" else "yes" end)) | . + "\u0000"' "$manifest_file" 2>/dev/null)
   fi
 
   if [ "$count" -gt 0 ]; then
-    echo "Agent registration: ${count} instruction file(s) refreshed"
+    echo "Agent registration: ${count} file(s) refreshed"
   fi
   return 0
 }

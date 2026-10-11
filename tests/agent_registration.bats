@@ -459,3 +459,212 @@ build_update_checkout() {
   [ ! -e "${HOME}/.claude/CLAUDE.md" ]
   grep -qF -- '- **newskill**' "${proj}/CLAUDE.md"
 }
+
+# --- Antigravity: skills.json -------------------------------------------------
+# Antigravity discovers skills only from <project>/.agents/skills/<name>/ or
+# from `entries[].path` declared in a skills.json: ~/.gemini/config/skills.json
+# globally, PROJECT/.agents/skills.json per project. The entry points at the
+# installed clone's skills/ dir (absolute) and is merged, never overwritten.
+
+# skills_dir — canonical absolute skills/ dir of the local checkout.
+skills_dir() {
+  printf '%s/skills' "$(cd -P "$CHECKOUT" && pwd)"
+}
+
+@test "antigravity: ~/.gemini present creates config/skills.json with the absolute skills dir" {
+  mkdir -p "${HOME}/.gemini"
+  local f="${HOME}/.gemini/config/skills.json" sd
+  sd="$(skills_dir)"
+  run_install
+  [ "$status" -eq 0 ]
+  [ -f "$f" ]
+  [ "$(jq -r '.entries | length' "$f")" -eq 1 ]
+  [ "$(jq -r '.entries[0].path' "$f")" = "$sd" ]
+  [[ "$output" == *"Registered skills for agents in:"* ]]
+  [[ "$output" == *"$f"* ]]
+}
+
+@test "antigravity: no ~/.gemini means nothing is created" {
+  run_install
+  [ "$status" -eq 0 ]
+  [ ! -e "${HOME}/.gemini" ]
+}
+
+@test "antigravity: existing entries and other keys are merged, not clobbered" {
+  mkdir -p "${HOME}/.gemini/config"
+  local f="${HOME}/.gemini/config/skills.json" sd
+  sd="$(skills_dir)"
+  printf '%s\n' '{"inherits":"base","entries":[{"path":"/other/skills","label":"x"}]}' > "$f"
+  run_install
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.inherits' "$f")" = "base" ]
+  [ "$(jq -r '.entries | length' "$f")" -eq 2 ]
+  [ "$(jq -r '.entries[0].path' "$f")" = "/other/skills" ]
+  [ "$(jq -r '.entries[0].label' "$f")" = "x" ]
+  [ "$(jq -r '.entries[1].path' "$f")" = "$sd" ]
+}
+
+@test "antigravity: an existing object without entries gets the key added" {
+  mkdir -p "${HOME}/.gemini/config"
+  local f="${HOME}/.gemini/config/skills.json"
+  printf '%s\n' '{"inherits":"base"}' > "$f"
+  run_install
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.inherits' "$f")" = "base" ]
+  [ "$(jq -r '.entries | length' "$f")" -eq 1 ]
+}
+
+@test "antigravity: re-running is idempotent, no duplicate entry and no rewrite" {
+  mkdir -p "${HOME}/.gemini"
+  local f="${HOME}/.gemini/config/skills.json" before
+  run_install
+  [ "$status" -eq 0 ]
+  before="$(cat "$f")"
+  touch -t 202001010000 "$f"
+  run_install
+  [ "$status" -eq 0 ]
+  [ "$(cat "$f")" = "$before" ]
+  [ "$(jq -r '.entries | length' "$f")" -eq 1 ]
+  # Unchanged content is not rewritten: the old mtime survives.
+  [ "$(date -r "$f" +%Y)" = "2020" ]
+}
+
+@test "antigravity: invalid JSON is left untouched with a warning, install exits 0" {
+  mkdir -p "${HOME}/.gemini/config"
+  local f="${HOME}/.gemini/config/skills.json"
+  printf '%s' '{ not json' > "$f"
+  run_install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"warning"* ]]
+  [ "$(cat "$f")" = '{ not json' ]
+  [ -f "${HOME}/.claude/CLAUDE.md" ]
+}
+
+@test "antigravity: a non-object or non-array entries is left untouched with a warning" {
+  mkdir -p "${HOME}/.gemini/config"
+  local f="${HOME}/.gemini/config/skills.json"
+  printf '%s' '[1,2]' > "$f"
+  run_install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"warning"* ]]
+  [ "$(cat "$f")" = '[1,2]' ]
+  printf '%s' '{"entries":"nope"}' > "$f"
+  run_install
+  [ "$status" -eq 0 ]
+  [ "$(cat "$f")" = '{"entries":"nope"}' ]
+}
+
+@test "antigravity: file mode is preserved and a symlinked skills.json is written through" {
+  mkdir -p "${HOME}/.gemini/config" "${SANDBOX_TMP}/dots"
+  local real="${SANDBOX_TMP}/dots/skills.json" f="${HOME}/.gemini/config/skills.json"
+  printf '%s\n' '{"entries":[]}' > "$real"
+  chmod 600 "$real"
+  ln -s "$real" "$f"
+  run_install
+  [ "$status" -eq 0 ]
+  [ -L "$f" ]
+  [ "$(jq -r '.entries | length' "$real")" -eq 1 ]
+  [ "$(stat -f %Lp "$real" 2>/dev/null || stat -c %a "$real")" = "600" ]
+}
+
+@test "antigravity: --no-register and EGLOFF_NO_REGISTER skip skills.json" {
+  mkdir -p "${HOME}/.gemini"
+  run_install --no-register
+  [ "$status" -eq 0 ]
+  [ ! -e "${HOME}/.gemini/config/skills.json" ]
+  EGLOFF_NO_REGISTER=1 run bash "${CHECKOUT}/install.sh"
+  [ "$status" -eq 0 ]
+  [ ! -e "${HOME}/.gemini/config/skills.json" ]
+}
+
+@test "antigravity: --project writes PROJECT/.agents/skills.json, not the global file" {
+  mkdir -p "${HOME}/.gemini"
+  local proj="${SANDBOX_TMP}/proj" sd
+  mkdir -p "$proj"
+  sd="$(skills_dir)"
+  run_install --project "$proj"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.entries[0].path' "${proj}/.agents/skills.json")" = "$sd" ]
+  [[ "$output" == *"${proj}/.agents/skills.json"* || "$output" == *"/.agents/skills.json"* ]]
+  [ ! -e "${HOME}/.gemini/config/skills.json" ]
+}
+
+@test "antigravity: --project --no-register writes no .agents/skills.json" {
+  local proj="${SANDBOX_TMP}/proj"
+  mkdir -p "$proj"
+  run_install --project "$proj" --no-register
+  [ "$status" -eq 0 ]
+  [ ! -e "${proj}/.agents" ]
+}
+
+@test "antigravity: update repairs the global and project skills.json" {
+  local origin proj sd
+  origin="$(build_update_checkout)"
+  mkdir -p "${HOME}/.gemini"
+  proj="${SANDBOX_TMP}/proj"
+  mkdir -p "$proj"
+  sd="$(skills_dir)"
+  run bash "${CHECKOUT}/install.sh" --project "$proj"
+  [ "$status" -eq 0 ]
+  run bash "${CHECKOUT}/install.sh"
+  [ "$status" -eq 0 ]
+  rm -f "${HOME}/.gemini/config/skills.json" "${proj}/.agents/skills.json"
+
+  push_fixture_skill "$origin" newskill
+  run bash "${CHECKOUT}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.entries[0].path' "${HOME}/.gemini/config/skills.json")" = "$sd" ]
+  [ "$(jq -r '.entries[0].path' "${proj}/.agents/skills.json")" = "$sd" ]
+}
+
+@test "antigravity: update honors the global opt-out and project register:false" {
+  local origin proj
+  origin="$(build_update_checkout)"
+  mkdir -p "${HOME}/.gemini"
+  proj="${SANDBOX_TMP}/proj"
+  mkdir -p "$proj"
+  run bash "${CHECKOUT}/install.sh" --project "$proj" --no-register
+  [ "$status" -eq 0 ]
+  run bash "${CHECKOUT}/install.sh" --no-register
+  [ "$status" -eq 0 ]
+  push_fixture_skill "$origin" newskill
+  run bash "${CHECKOUT}/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [ ! -e "${HOME}/.gemini/config/skills.json" ]
+  [ ! -e "${proj}/.agents/skills.json" ]
+}
+
+@test "usage documents the Antigravity skills.json registration" {
+  run bash "${CHECKOUT}/install.sh" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"skills.json"* ]]
+}
+
+@test "antigravity: install root reached via symlink yields one entry after update" {
+  local real="${SANDBOX_TMP}/realparent" link="${SANDBOX_TMP}/linkparent"
+  local remote="${SANDBOX_TMP}/sym-remote.git" work="${SANDBOX_TMP}/sym-src"
+  mkdir -p "$real" "${HOME}/.gemini" "${work}/bin" "${work}/skills"
+  ln -s "$real" "$link"
+  cp -R "${REPO_ROOT}/skills/egloff-api" "${work}/skills/egloff-api"
+  cp "$INSTALL_SH" "${work}/install.sh"
+  cp "$CLI" "${work}/bin/egloff-api"
+  git init -q -b main "$work"
+  git -C "$work" -c user.email=t@e.com -c user.name=bats add -A
+  git -C "$work" -c user.email=t@e.com -c user.name=bats commit -q -m initial
+  git init -q --bare "$remote"
+  git -C "$work" push -q "$remote" main
+  git -C "$remote" symbolic-ref HEAD refs/heads/main
+
+  export EGLOFF_REPO_URL="$remote"
+  export EGLOFF_INSTALL_ROOT="${link}/clone/"
+  run bash < "$INSTALL_SH"
+  [ "$status" -eq 0 ]
+  local f="${HOME}/.gemini/config/skills.json"
+  [ "$(jq -r '.entries | length' "$f")" -eq 1 ]
+
+  push_fixture_skill "$remote" newskill
+  run bash "${real}/clone/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.entries | length' "$f")" -eq 1 ]
+  [ "$(jq -r '.entries[0].path' "$f")" = "$(cd -P "${real}/clone" && pwd)/skills" ]
+}

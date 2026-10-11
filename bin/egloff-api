@@ -866,7 +866,12 @@ _upd_register_agents() {
   [ -e "$(_upd_register_marker_path)" ] && global_opted_out=1
 
   local count=0 block file skills_dir
-  skills_dir="$(cd -P "$root" 2>/dev/null && pwd)/skills"
+  # Canonical skills dir; when it cannot be resolved the skills.json writes
+  # are skipped rather than registering a bogus "/skills" entry.
+  local canon_root=""
+  canon_root="$(cd -P "$root" 2>/dev/null && pwd)" || canon_root=""
+  skills_dir=""
+  [ -n "$canon_root" ] && skills_dir="${canon_root}/skills"
   local global_dest="${HOME}/.claude/skills"
   local targets=("${HOME}/.claude/CLAUDE.md")
   [ -d "${HOME}/.codex" ] && targets+=("${HOME}/.codex/AGENTS.md")
@@ -897,7 +902,7 @@ _upd_register_agents() {
         count=$((count + 1))
       fi
     done
-    if [ -d "${HOME}/.gemini" ] \
+    if [ -d "${HOME}/.gemini" ] && [ -n "$skills_dir" ] \
       && _upd_write_skills_json "${HOME}/.gemini/config/skills.json" "$skills_dir"; then
       count=$((count + 1))
     fi
@@ -915,7 +920,8 @@ _upd_register_agents() {
           count=$((count + 1))
         fi
       done
-      if _upd_write_skills_json "${proj_path}/.agents/skills.json" "$skills_dir"; then
+      if [ -n "$skills_dir" ] \
+        && _upd_write_skills_json "${proj_path}/.agents/skills.json" "$skills_dir"; then
         count=$((count + 1))
       fi
     done < <(jq -j '.projects[]? | (.path, (if .register == false then "no" else "yes" end)) | . + "\u0000"' "$manifest_file" 2>/dev/null)

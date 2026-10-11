@@ -90,6 +90,9 @@ never see the installed skills, so `install.sh` also writes a managed block
   apply as for the managed block. Project `skills.json` files hold an
   absolute local path, so add `.agents/skills.json` to `.gitignore` if the
   project is shared.
+- `skills.json` entries are not removed automatically if the clone is moved or
+  deleted, or after a later `--no-register` (same as the managed block):
+  remove stale entries by hand.
 - Content outside the markers is never touched; re-running replaces the block
   in place (idempotent). A file with unbalanced markers is skipped with a
   warning. Registration never fails the install.

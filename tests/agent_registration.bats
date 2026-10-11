@@ -639,3 +639,32 @@ skills_dir() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"skills.json"* ]]
 }
+
+@test "antigravity: install root reached via symlink yields one entry after update" {
+  local real="${SANDBOX_TMP}/realparent" link="${SANDBOX_TMP}/linkparent"
+  local remote="${SANDBOX_TMP}/sym-remote.git" work="${SANDBOX_TMP}/sym-src"
+  mkdir -p "$real" "${HOME}/.gemini" "${work}/bin" "${work}/skills"
+  ln -s "$real" "$link"
+  cp -R "${REPO_ROOT}/skills/egloff-api" "${work}/skills/egloff-api"
+  cp "$INSTALL_SH" "${work}/install.sh"
+  cp "$CLI" "${work}/bin/egloff-api"
+  git init -q -b main "$work"
+  git -C "$work" -c user.email=t@e.com -c user.name=bats add -A
+  git -C "$work" -c user.email=t@e.com -c user.name=bats commit -q -m initial
+  git init -q --bare "$remote"
+  git -C "$work" push -q "$remote" main
+  git -C "$remote" symbolic-ref HEAD refs/heads/main
+
+  export EGLOFF_REPO_URL="$remote"
+  export EGLOFF_INSTALL_ROOT="${link}/clone/"
+  run bash < "$INSTALL_SH"
+  [ "$status" -eq 0 ]
+  local f="${HOME}/.gemini/config/skills.json"
+  [ "$(jq -r '.entries | length' "$f")" -eq 1 ]
+
+  push_fixture_skill "$remote" newskill
+  run bash "${real}/clone/bin/egloff-api" update
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.entries | length' "$f")" -eq 1 ]
+  [ "$(jq -r '.entries[0].path' "$f")" = "$(cd -P "${real}/clone" && pwd)/skills" ]
+}

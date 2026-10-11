@@ -503,7 +503,12 @@ write_skills_json() {
 # is a warning.
 register_skills() {
   local source_dir="$1" dest_root="$2" proj="$3"
-  local targets=() json_targets=() block file updated=()
+  local targets=() json_targets=() block file updated=() skills_dir=""
+
+  # Same canonical form `egloff-api update` computes (cd -P), so the
+  # skills.json entry written here and the one update checks are identical
+  # even when the install root is reached via a symlink or trailing slash.
+  skills_dir="$(cd -P "$source_dir" 2>/dev/null && pwd)" || skills_dir=""
 
   if [ -n "$proj" ]; then
     targets=("${proj}/CLAUDE.md" "${proj}/AGENTS.md")
@@ -534,9 +539,13 @@ register_skills() {
   elif [ -d "${HOME}/.gemini" ]; then
     json_targets=("${HOME}/.gemini/config/skills.json")
   fi
+  if [ -z "$skills_dir" ]; then
+    echo "warning: could not canonicalize ${source_dir} — skipping Antigravity registration" >&2
+    json_targets=()
+  fi
   # ${arr[@]+...} keeps an empty array safe under `set -u` on bash 3.2.
   for file in ${json_targets[@]+"${json_targets[@]}"}; do
-    if write_skills_json "$file" "${source_dir}/skills"; then
+    if write_skills_json "$file" "${skills_dir}/skills"; then
       updated+=("$file")
     fi
   done

@@ -170,8 +170,15 @@ todas las que haya bajo `skills/` y `egloff-api update` las mantiene al día.
 - `issue-format` — formato de issues (aprobados desde el inicio, prioridad como label), para cualquier repo.
 - `pr-format` — formato de PRs (resumen, decisiones tomadas, riesgos, cómo se validó y criterios del issue
   resueltos), para cualquier repo.
+- `rfc-format` — formato de RFCs en `docs/rfc/` (plantilla completa y corta para cambios visuales, numeración,
+  estados e índice), para cualquier repo.
+- `adr-format` — formato de ADRs en `docs/adr/` (plantilla, numeración, índice y flujo de reemplazo), para
+  cualquier repo.
+- `constitution` — guía la creación de `docs/constitution.md` preguntando una cosa a la vez, con un esquema de
+  10 secciones.
 
-Son dos skills separadas a propósito: cada una se carga solo cuando se pide crear un issue o un PR.
+Son skills separadas a propósito: cada una se carga solo cuando se pide crear un issue, un PR, un RFC, un ADR
+o la constitución.
 
 ## Requisitos
 

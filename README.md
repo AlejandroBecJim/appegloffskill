@@ -79,6 +79,20 @@ never see the installed skills, so `install.sh` also writes a managed block
   usually committed, so entries use the relative path
   `.claude/skills/<skill>/SKILL.md`; no absolute local path is written there
   (global blocks do use absolute paths).
+- Antigravity does not read those files: it only loads skills from the
+  `entries` of a `skills.json`. So the installed clone's `skills/` directory
+  (absolute path) is also merged into `~/.gemini/config/skills.json` (only
+  when `~/.gemini` exists) and, with `--project PATH`, into
+  `PATH/.agents/skills.json`. Existing entries and other keys are kept, the
+  entry is added once (re-running or `egloff-api update` does not duplicate
+  or rewrite it), the write is atomic, and a file that is not a JSON object
+  with an `entries` array is left untouched with a warning. The same opt-outs
+  apply as for the managed block. Project `skills.json` files hold an
+  absolute local path, so add `.agents/skills.json` to `.gitignore` if the
+  project is shared.
+- `skills.json` entries are not removed automatically if the clone is moved or
+  deleted, or after a later `--no-register` (same as the managed block):
+  remove stale entries by hand.
 - Content outside the markers is never touched; re-running replaces the block
   in place (idempotent). A file with unbalanced markers is skipped with a
   warning. Registration never fails the install.
@@ -156,10 +170,17 @@ todas las que haya bajo `skills/` y `egloff-api update` las mantiene al día.
 - `issue-format` — formato de issues (aprobados desde el inicio, prioridad como label), para cualquier repo.
 - `pr-format` — formato de PRs (resumen, decisiones tomadas, riesgos, cómo se validó y criterios del issue
   resueltos), para cualquier repo.
+- `rfc-format` — formato de RFCs en `docs/rfc/` (plantilla completa y corta para cambios visuales, numeración,
+  estados e índice), para cualquier repo.
+- `adr-format` — formato de ADRs en `docs/adr/` (plantilla, numeración, índice y flujo de reemplazo), para
+  cualquier repo.
+- `constitution` — guía la creación de `docs/constitution.md` preguntando una cosa a la vez, con un esquema de
+  10 secciones.
 - `architecture-patterns` — una única arquitectura (MVC en el borde + un caso de uso por clase) para Laravel, PHP,
   Angular, C#, Python y React, con presupuesto de archivos y modo auditoría/reestructuración.
 
-Issue y PR son skills separadas a propósito: cada una se carga solo cuando se pide crear un issue o un PR.
+Son skills separadas a propósito: cada una se carga solo cuando se pide crear un issue, un PR, un RFC, un ADR
+o la constitución.
 
 ## Requisitos
 

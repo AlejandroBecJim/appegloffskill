@@ -5,7 +5,7 @@
 
 load 'helpers/setup'
 
-NEW_SKILLS=(rfc-format adr-format constitution)
+NEW_SKILLS=(rfc-format adr-format constitution architecture-patterns)
 
 setup() {
   sandbox_setup
@@ -64,4 +64,14 @@ teardown() {
 
 @test "constitution asks one question at a time" {
   grep -qi 'one question at a time' "${REPO_ROOT}/skills/constitution/SKILL.md"
+}
+
+@test "architecture-patterns ships stack references, restructure guide, budget and escalation" {
+  local d="${REPO_ROOT}/skills/architecture-patterns"
+  local r
+  for r in laravel-php angular react csharp python restructure; do
+    [ -f "${d}/references/${r}.md" ]
+  done
+  grep -q '^## File budget' "${d}/SKILL.md"
+  grep -q '^## Escalation' "${d}/SKILL.md"
 }

@@ -69,7 +69,7 @@ teardown() {
 @test "architecture-patterns ships stack references, restructure guide, budget and escalation" {
   local d="${REPO_ROOT}/skills/architecture-patterns"
   local r
-  for r in laravel-php angular react csharp python restructure; do
+  for r in laravel-php angular react csharp python dart-flutter restructure; do
     [ -f "${d}/references/${r}.md" ]
   done
   grep -q '^## File budget' "${d}/SKILL.md"

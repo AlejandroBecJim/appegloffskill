@@ -1,6 +1,6 @@
 ---
 name: architecture-patterns
-description: "Trigger: vamos con el issue, implementa el issue, resuelve el issue, ahora el issue <num>, resolver issue, resolve issue, implement issue, implementar feature, new endpoint, nuevo endpoint, nueva pantalla, nuevo CRUD, dónde pongo este código, cuántos archivos crear, estructura de carpetas, audit architecture, auditar repo, reestructurar, archivo demasiado grande. Impose ONE architecture (MVC at the edge + one use case per class) across Laravel, PHP, Angular, C#, Python and React, with file budgets and size limits."
+description: "Trigger: vamos con el issue, implementa el issue, resuelve el issue, ahora el issue <num>, resolver issue, resolve issue, implement issue, implementar feature, new endpoint, nuevo endpoint, nueva pantalla, nuevo CRUD, dónde pongo este código, cuántos archivos crear, estructura de carpetas, audit architecture, auditar repo, reestructurar, archivo demasiado grande. Impose ONE architecture (MVC at the edge + one use case per class) across Laravel, PHP, Angular, C#, Python, React and Dart/Flutter, with file budgets and size limits."
 license: Apache-2.0
 metadata:
   author: "AlejandroBecJim"
@@ -9,7 +9,7 @@ metadata:
 
 ## Activation Contract
 
-Load whenever a task creates or moves files, resolves an issue, or asks to audit or restructure a repo. Prose in Spanish, identifiers in English. The architecture is fixed: do not adapt it to each repo and do not propose alternatives, except through the escalation criteria below. Load only `references/<stack>.md` for the stack in use (`laravel-php`, `angular`, `react`, `csharp`, `python`). For "audit" or "restructure" also load `references/restructure.md`.
+Load whenever a task creates or moves files, resolves an issue, or asks to audit or restructure a repo. Prose in Spanish, identifiers in English. The architecture is fixed: do not adapt it to each repo and do not propose alternatives, except through the escalation criteria below. Load only `references/<stack>.md` for the stack in use (`laravel-php`, `angular`, `react`, `csharp`, `python`, `dart-flutter`). For "audit" or "restructure" also load `references/restructure.md`.
 
 Goal: avoid both "a million files" and "god files".
 

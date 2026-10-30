@@ -177,7 +177,7 @@ todas las que haya bajo `skills/` y `egloff-api update` las mantiene al día.
 - `constitution` — guía la creación de `docs/constitution.md` preguntando una cosa a la vez, con un esquema de
   10 secciones.
 - `architecture-patterns` — una única arquitectura (MVC en el borde + un caso de uso por clase) para Laravel, PHP,
-  Angular, C#, Python y React, con presupuesto de archivos y modo auditoría/reestructuración.
+  Angular, C#, Python, React y Dart/Flutter, con presupuesto de archivos y modo auditoría/reestructuración.
 
 Son skills separadas a propósito: cada una se carga solo cuando se pide crear un issue, un PR, un RFC, un ADR
 o la constitución.

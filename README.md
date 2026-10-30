@@ -156,8 +156,10 @@ todas las que haya bajo `skills/` y `egloff-api update` las mantiene al día.
 - `issue-format` — formato de issues (aprobados desde el inicio, prioridad como label), para cualquier repo.
 - `pr-format` — formato de PRs (resumen, decisiones tomadas, riesgos, cómo se validó y criterios del issue
   resueltos), para cualquier repo.
+- `architecture-patterns` — una única arquitectura (MVC en el borde + un caso de uso por clase) para Laravel, PHP,
+  Angular, C#, Python y React, con presupuesto de archivos y modo auditoría/reestructuración.
 
-Son dos skills separadas a propósito: cada una se carga solo cuando se pide crear un issue o un PR.
+Issue y PR son skills separadas a propósito: cada una se carga solo cuando se pide crear un issue o un PR.
 
 ## Requisitos
 
